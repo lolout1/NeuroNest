@@ -1,4 +1,4 @@
-# NeuroNest: A AI Framework for Alzheimer's-Friendly Environment Assessment
+# NeuroNest: An AI Framework for Alzheimer's-Friendly Environment Assessment
 
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.10+-ee4c2c.svg)](https://pytorch.org/)
