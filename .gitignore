@@ -6,3 +6,7 @@
 blackspot/*.pth
 blackspot/__pycache__
 oneformer/
+*.pth
+blackspot/*.pth
+models/
+output_floor_blackspot/
