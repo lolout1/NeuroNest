@@ -6,7 +6,7 @@ import numpy as np
 import logging
 from typing import Dict
 
-from oneformer import OneFormerManager
+from oneformer_local import OneFormerManager
 from blackspot import BlackspotDetector
 from contrast import RobustContrastAnalyzer
 from config import ONEFORMER_CONFIG
@@ -23,7 +23,7 @@ class NeuroNestApp:
         self.contrast_analyzer = RobustContrastAnalyzer()
         self.initialized = False
 
-    def initialize(self, blackspot_model_path: str = "./output_floor_blackspot/model_0004999.pth"):
+    def initialize(self, blackspot_model_path: str = "./blackspot/model_0004999.pth"):
         """Initialize all components"""
         logger.info("Initializing NeuroNest application...")
 
