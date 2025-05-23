@@ -1,3 +1,7 @@
 *.out
 *.pyc
 *.pth
+*__pycache/
+*blackspot/*.pth
+blackspot/*.pth
+blackspot/__pycache__
