@@ -11,14 +11,23 @@ matplotlib==3.7.5
 scikit-learn==1.3.2
 scikit-image==0.21.0
 
-# NOW install detectron2 (after torch is available)
-detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
+# Install detectron2 dependencies using git+https format
+git+https://github.com/cocodataset/panopticapi.git
+git+https://github.com/mcordts/cityscapesScripts.git
 
-# OneFormer dependencies
+# Install detectron2 using git+https format (after torch is available)
+git+https://github.com/facebookresearch/detectron2.git@v0.6
+
+# OneFormer using git+https format
 git+https://github.com/SHI-Labs/OneFormer.git
+
+# Additional ML dependencies
 timm==0.9.12
 transformers==4.33.2
 huggingface-hub==0.20.3
+fairscale==0.4.13
+einops==0.7.0
+fvcore==0.1.5.post20221221
 
 # Web interface
 gradio==4.19.2
@@ -31,11 +40,6 @@ requests==2.31.0
 psutil==5.9.5
 packaging==23.1
 
-# Additional ML dependencies
-fairscale==0.4.13
-einops==0.7.0
-fvcore==0.1.5.post20221221
-
 # Color science for contrast analysis
 colorspacious==1.1.2
 colour-science==0.4.2
@@ -47,7 +51,6 @@ PyWavelets==1.4.1
 
 # Dataset handling
 pycocotools==2.0.7
-cityscapesScripts==2.2.2
 
 # Threading optimization
 threadpoolctl==3.2.0
