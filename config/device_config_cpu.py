@@ -51,7 +51,7 @@ def main():
     
     try:
         # Import configuration
-        from config.device_config_cpu import DEVICE, TORCH_AVAILABLE
+        from config.device_config import DEVICE, TORCH_AVAILABLE
         logger.info(f"✅ Configuration loaded - Device: {DEVICE}")
         
         # Import and create interface
