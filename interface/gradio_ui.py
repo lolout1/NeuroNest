@@ -1,48 +1,76 @@
-"""Enhanced Gradio interface with comprehensive blackspot and contrast visualization options."""
+"""Enhanced Gradio interface with resolution options and label visualization."""
 
 import gradio as gr
 import numpy as np
 import cv2
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple, Optional
 
 from core import NeuroNestApp
-from utils import generate_analysis_report
+from utils.helpers import generate_analysis_report  # Explicit import
 
 
 def create_gradio_interface():
-    """Create the enhanced Gradio interface with comprehensive visualization options"""
+    """Create the enhanced Gradio interface with resolution and labeling options"""
 
     # Initialize the application
-    app = NeuroNestApp()
-    oneformer_ok, blackspot_ok = app.initialize()
+    app = None
+    
+    def initialize_app(use_high_res: bool = False) -> Tuple[bool, bool]:
+        """Initialize or reinitialize the app with specified resolution"""
+        nonlocal app
+        app = NeuroNestApp()
+        return app.initialize(use_high_res=use_high_res)
+
+    # Initialize with standard resolution by default
+    oneformer_ok, blackspot_ok = initialize_app(use_high_res=False)
 
     if not oneformer_ok:
         raise RuntimeError("Failed to initialize OneFormer")
 
     def analyze_wrapper(image_path, blackspot_threshold, contrast_threshold,
-                       enable_blackspot, enable_contrast, visualization_mode):
+                       enable_blackspot, enable_contrast, visualization_mode,
+                       use_high_res, show_labels):
         """Enhanced wrapper function for comprehensive analysis"""
         if image_path is None:
-            return None, None, None, None, "Please upload an image"
+            return None, None, None, None, None, "Please upload an image"
 
         try:
+            # Check if we need to reinitialize with different resolution
+            if use_high_res != app.use_high_res:
+                gr.Info(f"Reinitializing with {'high' if use_high_res else 'standard'} resolution...")
+                oneformer_ok, blackspot_ok = initialize_app(use_high_res=use_high_res)
+                if not oneformer_ok:
+                    return None, None, None, None, None, "Failed to reinitialize with new resolution"
+
+            # Run analysis
             results = app.analyze_image(
                 image_path=image_path,
                 blackspot_threshold=blackspot_threshold,
                 contrast_threshold=contrast_threshold,
                 enable_blackspot=enable_blackspot,
-                enable_contrast=enable_contrast
+                enable_contrast=enable_contrast,
+                show_labels=show_labels
             )
 
             if "error" in results:
-                return None, None, None, None, f"Error: {results['error']}"
+                return None, None, None, None, None, f"Error: {results['error']}"
 
-            # Extract main segmentation output
-            seg_output = results['segmentation']['visualization'] if results['segmentation'] else None
+            # Extract segmentation outputs
+            seg_visualization = None
+            seg_labeled = None
+            
+            if results['segmentation']:
+                if show_labels:
+                    seg_visualization = results['segmentation'].get('labeled_visualization')
+                else:
+                    seg_visualization = results['segmentation'].get('visualization')
+                
+                # Always get both for the dedicated tab
+                seg_labeled = results['segmentation'].get('labeled_visualization')
 
             # Enhanced visualization selection
-            main_output = seg_output  # Default
+            main_output = seg_visualization  # Default
             blackspot_output = None
             contrast_output = None
             combined_output = None
@@ -68,16 +96,16 @@ def create_gradio_interface():
             if results['contrast']:
                 contrast_output = results['contrast'].get('visualization')
 
-            # Combined visualization (show both blackspots and contrast on same image)
-            if results['blackspot'] and results['contrast']:
+            # Combined visualization
+            if results['blackspot'] and results['contrast'] and enable_blackspot and enable_contrast:
                 contrast_vis = results['contrast'].get('visualization')
                 if contrast_vis is not None:
                     combined_output = contrast_vis.copy()
 
-                    # Overlay blackspot areas in bright yellow for distinction
+                    # Overlay blackspot areas
                     blackspot_mask = results['blackspot'].get('blackspot_mask')
                     if blackspot_mask is not None and np.any(blackspot_mask):
-                        # Resize mask if needed to match contrast visualization
+                        # Resize mask if needed
                         if blackspot_mask.shape != combined_output.shape[:2]:
                             blackspot_mask_resized = cv2.resize(
                                 blackspot_mask.astype(np.uint8),
@@ -87,13 +115,15 @@ def create_gradio_interface():
                         else:
                             blackspot_mask_resized = blackspot_mask
 
-                        # Overlay blackspots in bright yellow
-                        combined_output[blackspot_mask_resized] = [255, 255, 0]
+                        # Create a more visible overlay
+                        overlay = combined_output.copy()
+                        overlay[blackspot_mask_resized] = [255, 255, 0]  # Bright yellow for blackspots
+                        combined_output = cv2.addWeighted(combined_output, 0.7, overlay, 0.3, 0)
 
-            # Determine main output based on what's enabled and mode
+            # Determine main output based on mode and what's enabled
             if visualization_mode == "Combined Analysis" and combined_output is not None:
                 main_output = combined_output
-            elif enable_blackspot and blackspot_output is not None and visualization_mode != "Combined Analysis":
+            elif visualization_mode in ["High Contrast", "Side by Side", "Blackspots Only", "Annotated"] and blackspot_output is not None:
                 main_output = blackspot_output
             elif enable_contrast and contrast_output is not None and not enable_blackspot:
                 main_output = contrast_output
@@ -101,44 +131,57 @@ def create_gradio_interface():
             # Generate comprehensive report
             report = generate_analysis_report(results)
 
-            return main_output, blackspot_output, contrast_output, combined_output, report
+            return main_output, seg_labeled, blackspot_output, contrast_output, combined_output, report
 
         except Exception as e:
             error_msg = f"Analysis failed: {str(e)}"
-            return None, None, None, None, error_msg
+            return None, None, None, None, None, error_msg
 
     # Create the interface
-    title = "🧠 NeuroNest: Ultra-Comprehensive Alzheimer's Environment Analysis"
+    title = "🧠 NeuroNest: Comprehensive Alzheimer's Environment Analysis"
+    subtitle = "**Abheek Pradhan** | Faculty: **Dr. Nadim Adi** and **Dr. Greg Lakomski**"
+    funding = "Funded by Department of Computer Science and Department of Interior Design @ Texas State University"
+    
     description = """
     **Advanced AI System for Creating Dementia-Friendly Environments**
 
     **🎯 Core Features:**
-    - **Object Segmentation**: Identifies all room elements with high precision
+    - **Object Segmentation**: Identifies all room elements with labeled visualization
     - **⚫ Blackspot Detection**: Detects dangerous black/dark areas on floors ONLY
-    - **🎨 Ultra-Sensitive Contrast Analysis**: Finds ANY similar colors that could cause confusion
+    - **🎨 Adjacency-Based Contrast Analysis**: Analyzes contrast between touching objects only
     - **📊 Evidence-Based Reporting**: Comprehensive safety recommendations
+    - **🔍 High Resolution Support**: Optional 896x896 resolution for enhanced accuracy
 
     **🔬 Detection Capabilities:**
-    - Analyzes genuine black/dark areas (RGB < 110) on floor surfaces
-    - Checks ALL object pairs for color similarity issues
-    - Uses Alzheimer's-specific 7:1 contrast threshold
-    - Provides multiple visualization modes for comprehensive analysis
+    - Labeled object identification with ADE20K classes
+    - Floor-constrained blackspot detection (RGB < 110)
+    - Adjacent object pair contrast analysis only
+    - Multiple visualization modes for comprehensive analysis
     """
 
     with gr.Blocks(
-        title=title,
+        title="NeuroNest - Alzheimer's Environment Analysis",
         theme=gr.themes.Soft(primary_hue="orange", secondary_hue="blue"),
         css="""
         .main-header { text-align: center; margin-bottom: 2rem; }
+        .title-section { text-align: center; margin-bottom: 1.5rem; }
+        .subtitle { font-size: 1.1em; color: #555; margin-top: 0.5rem; }
+        .funding { font-size: 0.95em; color: #666; font-style: italic; margin-top: 0.3rem; }
         .analysis-section { border: 2px solid #f0f0f0; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
         .critical-text { color: #ff0000; font-weight: bold; }
         .high-text { color: #ff8800; font-weight: bold; }
         .warning-box { background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 10px; margin: 10px 0; }
         .info-box { background-color: #d1ecf1; border: 1px solid #bee5eb; border-radius: 5px; padding: 10px; margin: 10px 0; }
+        .success-box { background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; padding: 10px; margin: 10px 0; }
         """
     ) as interface:
 
-        gr.Markdown(f"# {title}")
+        # Title section with author and funding information
+        with gr.Column(elem_classes=["title-section"]):
+            gr.Markdown(f"# {title}")
+            gr.Markdown(f'<div class="subtitle">{subtitle}</div>', elem_classes=["subtitle"])
+            gr.Markdown(f'<div class="funding">{funding}</div>', elem_classes=["funding"])
+        
         gr.Markdown(description)
 
         with gr.Row():
@@ -154,17 +197,32 @@ def create_gradio_interface():
                 # Analysis settings
                 with gr.Accordion("🔧 Analysis Settings", open=True):
 
+                    # Resolution settings
+                    with gr.Group():
+                        gr.Markdown("### 🔍 Resolution & Display Settings")
+                        use_high_res = gr.Checkbox(
+                            value=False,
+                            label="Use High Resolution (896x896)",
+                            info="Higher resolution provides better accuracy but requires more processing time"
+                        )
+                        
+                        show_labels = gr.Checkbox(
+                            value=True,
+                            label="Show Object Labels",
+                            info="Display object class names on segmentation"
+                        )
+
                     # Blackspot settings
                     with gr.Group():
                         gr.Markdown("### ⚫ Blackspot Detection (Floor-Only)")
                         if blackspot_ok:
-                            gr.Markdown('<div class="info-box">✅ <strong>Blackspot Detection Available</strong><br/>Detects genuinely black/dark areas on floors using multi-method color analysis.</div>')
+                            gr.Markdown('<div class="success-box">✅ <strong>Blackspot Detection Ready</strong><br/>Detects genuinely black/dark areas on floors using validated color analysis.</div>')
                         else:
-                            gr.Markdown('<div class="warning-box">⚠️ <strong>Blackspot Model Not Found</strong><br/>Color-based detection will be used as backup.</div>')
+                            gr.Markdown('<div class="warning-box">⚠️ <strong>Using Color-Based Detection</strong><br/>Model not found, using robust color-based detection.</div>')
                         
                         enable_blackspot = gr.Checkbox(
-                            value=True,  # Always enable since we have color-based fallback
-                            label="Enable Enhanced Blackspot Detection",
+                            value=True,
+                            label="Enable Floor Blackspot Detection",
                             interactive=True
                         )
 
@@ -179,12 +237,12 @@ def create_gradio_interface():
 
                     # Contrast settings
                     with gr.Group():
-                        gr.Markdown("### 🎨 Ultra-Sensitive Contrast Analysis")
-                        gr.Markdown('<div class="info-box">🔬 <strong>Advanced Detection</strong><br/>Analyzes ALL object pairs for similar colors that could cause confusion in dementia care.</div>')
+                        gr.Markdown("### 🎨 Adjacent Object Contrast Analysis")
+                        gr.Markdown('<div class="info-box">🔬 <strong>Adjacency-Based Detection</strong><br/>Analyzes contrast ONLY between objects that touch each other, ensuring relevant safety assessments.</div>')
                         
                         enable_contrast = gr.Checkbox(
                             value=True,
-                            label="Enable Ultra-Sensitive Contrast Analysis"
+                            label="Enable Adjacent Contrast Analysis"
                         )
 
                         contrast_threshold = gr.Slider(
@@ -223,27 +281,34 @@ def create_gradio_interface():
                 # Info box
                 with gr.Accordion("ℹ️ Technical Information", open=False):
                     gr.Markdown("""
-                    **Blackspot Detection Technical Details:**
-                    - Analyzes ONLY floor surfaces (carpet, wood, tile, rugs)
-                    - Detects genuinely black/dark areas (RGB < 110, multiple color spaces)
-                    - Uses 5-method voting system for high accuracy
-                    - Validates all detections to ensure they are actually dark
+                    **Resolution Options:**
+                    - **Standard (640x640)**: Fast processing, suitable for most cases
+                    - **High Resolution (896x896)**: Enhanced accuracy for detailed analysis
+                    
+                    **Object Labeling:**
+                    - Shows ADE20K class names on detected objects
+                    - 150 indoor/outdoor object classes supported
+                    - Helps identify specific items in the environment
+                    
+                    **Blackspot Detection:**
+                    - Analyzes ONLY floor surfaces (carpet, wood, tile, rugs, mats)
+                    - Detects genuinely black/dark areas (RGB < 110)
+                    - Uses multi-method validation for accuracy
                     - Filters out shadows and lighting artifacts
                     
-                    **Contrast Analysis Technical Details:**
-                    - Checks ALL possible object pairs in the room
-                    - Detects similar colors using RGB, HSV, and perceptual analysis
-                    - Uses Alzheimer's-specific 7:1 contrast threshold
-                    - Prioritizes safety-critical relationships (floor-stairs, wall-door)
-                    - Provides comprehensive similarity scoring
+                    **Contrast Analysis:**
+                    - Checks ONLY adjacent object pairs (touching objects)
+                    - Uses RGB, HSV, and LAB color spaces
+                    - Alzheimer's-specific 7:1 threshold
+                    - Prioritizes safety-critical relationships
                     
                     **Visualization Modes:**
                     - **High Contrast**: Enhanced overlays with bright highlighting
-                    - **Side by Side**: Original image vs analysis results
-                    - **Blackspots Only**: Pure blackspot visualization on floors
-                    - **Segmentation Only**: Clean object segmentation view
-                    - **Annotated**: Detailed risk assessments and labels
-                    - **Combined Analysis**: Both blackspots and contrast issues together
+                    - **Side by Side**: Original vs analysis comparison
+                    - **Blackspots Only**: Pure floor blackspot visualization
+                    - **Segmentation Only**: Clean object segmentation
+                    - **Annotated**: Detailed risk labels and assessments
+                    - **Combined Analysis**: Both blackspots and contrast issues
                     """)
 
             # Output Column
@@ -251,7 +316,7 @@ def create_gradio_interface():
                 # Main display
                 main_display = gr.Image(
                     label="🎯 Primary Analysis View",
-                    height=400,
+                    height=500,
                     interactive=False
                 )
 
@@ -263,26 +328,43 @@ def create_gradio_interface():
                             elem_classes=["analysis-section"]
                         )
 
+                    with gr.Tab("🏷️ Labeled Segmentation"):
+                        labeled_display = gr.Image(
+                            label="Object Detection with Labels",
+                            height=400,
+                            interactive=False
+                        )
+
                     with gr.Tab("⚫ Blackspot Analysis"):
                         blackspot_display = gr.Image(
-                            label="Blackspot Detection (Floors Only - Genuine Black/Dark Areas)",
-                            height=300,
+                            label="Floor Blackspot Detection",
+                            height=400,
                             interactive=False
                         )
 
                     with gr.Tab("🎨 Contrast Analysis"):
                         contrast_display = gr.Image(
-                            label="Similar Color & Contrast Issues (All Object Pairs)",
-                            height=300,
+                            label="Adjacent Object Contrast Issues",
+                            height=400,
                             interactive=False
                         )
 
                     with gr.Tab("🔄 Combined Analysis"):
                         combined_display = gr.Image(
-                            label="Comprehensive View: Blackspots + Contrast Issues",
-                            height=300,
+                            label="Comprehensive View: All Issues",
+                            height=400,
                             interactive=False
                         )
+
+        # Status display
+        with gr.Row():
+            gr.Markdown("""
+            <div class="info-box">
+            <strong>💡 Analysis Status:</strong> Ready to analyze • 
+            <strong>🔧 Resolution:</strong> <span id="res-status">Standard (640x640)</span> • 
+            <strong>🏷️ Labels:</strong> <span id="label-status">Enabled</span>
+            </div>
+            """)
 
         # Connect the interface
         analyze_button.click(
@@ -293,10 +375,13 @@ def create_gradio_interface():
                 contrast_threshold,
                 enable_blackspot,
                 enable_contrast,
-                visualization_mode
+                visualization_mode,
+                use_high_res,
+                show_labels
             ],
             outputs=[
                 main_display,
+                labeled_display,
                 blackspot_display,
                 contrast_display,
                 combined_display,
@@ -310,25 +395,28 @@ def create_gradio_interface():
             examples = []
             for img_path in example_dir.glob("*.jpg"):
                 if img_path.is_file():
-                    examples.append([str(img_path), 0.5, 7.0, True, True, "High Contrast"])
+                    examples.append([str(img_path), 0.5, 7.0, True, True, "High Contrast", False, True])
             
             for img_path in example_dir.glob("*.png"):
                 if img_path.is_file():
-                    examples.append([str(img_path), 0.5, 7.0, True, True, "High Contrast"])
+                    examples.append([str(img_path), 0.5, 7.0, True, True, "High Contrast", False, True])
 
             if examples:
                 gr.Examples(
-                    examples=examples[:3],  # Show max 3 examples
+                    examples=examples[:3],
                     inputs=[
                         image_input,
                         blackspot_threshold,
                         contrast_threshold,
                         enable_blackspot,
                         enable_contrast,
-                        visualization_mode
+                        visualization_mode,
+                        use_high_res,
+                        show_labels
                     ],
                     outputs=[
                         main_display,
+                        labeled_display,
                         blackspot_display,
                         contrast_display,
                         combined_display,
@@ -338,14 +426,24 @@ def create_gradio_interface():
                     label="🖼️ Example Images"
                 )
 
-        # Footer with technical specifications
+        # Footer with attribution
         gr.Markdown("""
-            ---
-            **NeuroNest Ultra** - Advanced AI for Alzheimer's-friendly environments
-            
-            *🔬 Features: Floor-only blackspot detection (RGB<110) • Ultra-sensitive contrast analysis • 5-method validation • Evidence-based recommendations*
-            
-            *🏥 Designed for dementia care facilities, assisted living, and home environments*
-            """)
+        ---
+        **NeuroNest Ultra** - Advanced AI for Alzheimer's-friendly environments
+        
+        *🔬 Features: Labeled object detection • Floor-only blackspots • Adjacent-only contrast • High resolution support*
+        
+        *🏥 Designed for dementia care facilities, assisted living, and home environments*
+        
+        <div class="success-box">
+        <strong>✨ Optimal Configuration:</strong> High Resolution + Labels + Both Analyses = Maximum Safety Assessment
+        </div>
+        
+        <div style="text-align: center; margin-top: 1rem; padding: 1rem; background-color: #f8f9fa; border-radius: 5px;">
+        <strong>Research Team:</strong> Abheek Pradhan | <strong>Faculty Advisors:</strong> Dr. Nadim Adi, Dr. Greg Lakomski<br/>
+        <em>Department of Computer Science & Department of Interior Design</em><br/>
+        <strong>Texas State University</strong>
+        </div>
+        """)
 
     return interface

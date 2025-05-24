@@ -1,15 +1,20 @@
-"""Enhanced contrast analysis for Alzheimer's-friendly environments with ALL object comparisons."""
+"""Enhanced contrast analysis for Alzheimer's-friendly environments with robust adjacency detection."""
 
 import numpy as np
 import cv2
 from typing import Dict, List, Tuple, Optional, Set
+from scipy import ndimage
+from scipy.spatial.distance import euclidean
+from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+import colorsys
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class RobustContrastAnalyzer:
-    """Ultra-comprehensive contrast analyzer that detects ANY similar colors in Alzheimer's environments"""
+    """Ultra-comprehensive contrast analyzer with robust adjacency detection for Alzheimer's environments"""
 
     def __init__(self, wcag_threshold: float = 4.5, alzheimer_threshold: float = 7.0, 
                  color_similarity_threshold: float = 30.0, perceptual_threshold: float = 0.15):
@@ -30,31 +35,37 @@ class RobustContrastAnalyzer:
             'floor': [3, 4, 13, 28, 78],      # floor, wood floor, rug, carpet, mat
             'wall': [0, 1, 9, 96, 97],        # wall, building, brick, wallpaper, tile wall
             'ceiling': [5],                   # ceiling
-            'sofa': [10],                     # sofa
-            'chair': [19],                    # chair
-            'armchair': [18],                 # armchair
-            'table': [15],                    # table
+            'sofa': [10, 23],                 # sofa, couch
+            'chair': [19, 30, 75],            # chair, armchair, swivel chair
+            'table': [15, 64],                # table, coffee table
             'bed': [7],                       # bed
-            'cabinet': [23, 24],              # cabinet, dresser
-            'door': [25],                     # door
-            'window': [8, 74],                # window, window frame
-            'stairs': [53],                   # stairs
-            'shelf': [30, 31],                # shelf, bookcase
+            'cabinet': [10, 24, 44],          # cabinet, wardrobe, chest of drawers
+            'door': [14],                     # door
+            'window': [8, 58],                # window, screen door
+            'stairs': [53, 59, 121],          # stairs, stairway, step
+            'shelf': [24, 62],                # shelf, bookcase
             'desk': [33],                     # desk
-            'lamp': [36],                     # lamp
-            'curtain': [49, 93],              # curtain, drapes
+            'lamp': [36, 82],                 # lamp, light
+            'curtain': [18, 63],              # curtain, blind
             'refrigerator': [50],             # refrigerator
             'television': [89],               # television
-            'counter': [11, 12],              # counter, countertop
-            'sink': [14],                     # sink
-            'toilet': [60],                   # toilet
-            'bathtub': [62],                  # bathtub
-            'mirror': [73],                   # mirror
-            'picture': [75, 76],              # painting, picture frame
-            'plant': [87, 88],                # plant, potted plant
-            'pillow': [83],                   # pillow
-            'blanket': [84],                  # blanket
-            'towel': [85],                    # towel
+            'counter': [45, 70],              # counter, countertop
+            'sink': [47],                     # sink
+            'toilet': [65],                   # toilet
+            'bathtub': [37],                  # bathtub
+            'mirror': [27],                   # mirror
+            'picture': [22, 100],             # painting, poster
+            'plant': [17, 66],                # plant, flower
+            'pillow': [57],                   # pillow
+            'blanket': [131],                 # blanket
+            'towel': [81],                    # towel
+            'rug': [28],                      # rug
+            'cushion': [39],                  # cushion
+            'railing': [38, 95],              # railing, bannister
+            'fireplace': [49],                # fireplace
+            'oven': [118],                    # oven
+            'dishwasher': [129],              # dishwasher
+            'microwave': [124],               # microwave
         }
         
         # Critical safety relationships
@@ -64,6 +75,7 @@ class RobustContrastAnalyzer:
             ('wall', 'door'), ('door', 'wall'),
             ('floor', 'toilet'), ('toilet', 'floor'),
             ('floor', 'bathtub'), ('bathtub', 'floor'),
+            ('stairs', 'railing'), ('railing', 'stairs'),
         }
         
         # High priority pairs
@@ -72,10 +84,13 @@ class RobustContrastAnalyzer:
             ('floor', 'chair'), ('chair', 'floor'),
             ('floor', 'table'), ('table', 'floor'),
             ('floor', 'bed'), ('bed', 'floor'),
+            ('floor', 'rug'), ('rug', 'floor'),
             ('wall', 'sofa'), ('sofa', 'wall'),
             ('wall', 'chair'), ('chair', 'wall'),
             ('wall', 'table'), ('table', 'wall'),
             ('wall', 'cabinet'), ('cabinet', 'wall'),
+            ('wall', 'mirror'), ('mirror', 'wall'),
+            ('wall', 'picture'), ('picture', 'wall'),
         }
 
     def get_object_category(self, class_id: int) -> Optional[str]:
@@ -105,12 +120,17 @@ class RobustContrastAnalyzer:
         sat_similarity = 1 - abs(hsv1[1] - hsv2[1]) / 255
         val_similarity = 1 - abs(hsv1[2] - hsv2[2]) / 255
         
-        # 3. Combined similarity score
+        # 3. LAB color space distance (more perceptually uniform)
+        lab1 = cv2.cvtColor(np.uint8([[color1]]), cv2.COLOR_RGB2LAB)[0][0]
+        lab2 = cv2.cvtColor(np.uint8([[color2]]), cv2.COLOR_RGB2LAB)[0][0]
+        lab_distance = np.linalg.norm(lab1 - lab2)
+        
+        # 4. Combined similarity score
         combined_similarity = (
-            rgb_similarity * 0.4 +
+            rgb_similarity * 0.3 +
             hue_similarity * 0.3 +
-            sat_similarity * 0.15 +
-            val_similarity * 0.15
+            sat_similarity * 0.2 +
+            val_similarity * 0.2
         )
         
         return {
@@ -120,7 +140,8 @@ class RobustContrastAnalyzer:
             'saturation_similarity': sat_similarity,
             'value_similarity': val_similarity,
             'combined_similarity': combined_similarity,
-            'hue_difference_degrees': hue_diff
+            'hue_difference_degrees': hue_diff,
+            'lab_distance': lab_distance
         }
 
     def calculate_wcag_contrast(self, color1: np.ndarray, color2: np.ndarray) -> float:
@@ -140,8 +161,9 @@ class RobustContrastAnalyzer:
 
         return (lighter + 0.05) / (darker + 0.05)
 
-    def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Extract dominant color from masked region"""
+    def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray, 
+                              use_clustering: bool = True) -> np.ndarray:
+        """Extract dominant color from masked region with optional clustering"""
         if not np.any(mask):
             return np.array([128, 128, 128])
 
@@ -149,30 +171,80 @@ class RobustContrastAnalyzer:
         if len(masked_pixels) == 0:
             return np.array([128, 128, 128])
 
-        # Use median for robustness against outliers
+        if use_clustering and len(masked_pixels) > 100:
+            # Sample pixels for efficiency
+            sample_size = min(1000, len(masked_pixels))
+            indices = np.random.choice(len(masked_pixels), sample_size, replace=False)
+            sampled_pixels = masked_pixels[indices]
+            
+            # Use DBSCAN clustering to find dominant color cluster
+            try:
+                clustering = DBSCAN(eps=30, min_samples=10).fit(sampled_pixels)
+                labels = clustering.labels_
+                
+                # Find the largest cluster
+                unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
+                if len(unique_labels) > 0:
+                    dominant_label = unique_labels[np.argmax(counts)]
+                    dominant_pixels = sampled_pixels[labels == dominant_label]
+                    return np.median(dominant_pixels, axis=0).astype(int)
+            except:
+                pass
+
+        # Fallback to median
         return np.median(masked_pixels, axis=0).astype(int)
 
     def find_adjacent_segments(self, seg1_mask: np.ndarray, seg2_mask: np.ndarray,
                              min_boundary_length: int = 30) -> np.ndarray:
-        """Find clean boundaries between segments"""
-        kernel = np.ones((3, 3), np.uint8)
-        dilated1 = cv2.dilate(seg1_mask.astype(np.uint8), kernel, iterations=1)
-        dilated2 = cv2.dilate(seg2_mask.astype(np.uint8), kernel, iterations=1)
-
-        boundary = dilated1 & dilated2
+        """Find clean boundaries between segments with robust adjacency detection"""
+        # Use multiple dilation levels to catch different types of adjacency
+        boundaries = []
+        
+        # Level 1: Direct adjacency (3x3 kernel)
+        kernel_small = np.ones((3, 3), np.uint8)
+        dilated1_small = cv2.dilate(seg1_mask.astype(np.uint8), kernel_small, iterations=1)
+        dilated2_small = cv2.dilate(seg2_mask.astype(np.uint8), kernel_small, iterations=1)
+        boundary_small = dilated1_small & dilated2_small
+        
+        # Level 2: Near adjacency (5x5 kernel)
+        kernel_medium = np.ones((5, 5), np.uint8)
+        dilated1_medium = cv2.dilate(seg1_mask.astype(np.uint8), kernel_medium, iterations=1)
+        dilated2_medium = cv2.dilate(seg2_mask.astype(np.uint8), kernel_medium, iterations=1)
+        boundary_medium = dilated1_medium & dilated2_medium
+        
+        # Combine boundaries with preference for direct adjacency
+        boundary = boundary_small | boundary_medium
+        
+        # Apply morphological closing to connect nearby boundary fragments
+        kernel_close = np.ones((3, 3), np.uint8)
+        boundary = cv2.morphologyEx(boundary, cv2.MORPH_CLOSE, kernel_close)
+        
+        # Clean up small noise
+        boundary = cv2.morphologyEx(boundary, cv2.MORPH_OPEN, kernel_small)
 
         # Remove small disconnected components
         contours, _ = cv2.findContours(boundary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         clean_boundary = np.zeros_like(boundary)
 
         for contour in contours:
-            if cv2.contourArea(contour) >= min_boundary_length:
+            area = cv2.contourArea(contour)
+            if area >= min_boundary_length:
                 cv2.fillPoly(clean_boundary, [contour], 1)
+                
+                # Additional check: ensure the boundary actually separates the two segments
+                # by checking if pixels on either side belong to different segments
+                x, y, w, h = cv2.boundingRect(contour)
+                roi1 = seg1_mask[y:y+h, x:x+w]
+                roi2 = seg2_mask[y:y+h, x:x+w]
+                
+                # If both segments have presence in this region, it's a valid boundary
+                if np.any(roi1) and np.any(roi2):
+                    cv2.fillPoly(clean_boundary, [contour], 1)
 
         return clean_boundary.astype(bool)
 
     def analyze_contrast(self, image: np.ndarray, segmentation: np.ndarray) -> Dict:
-        """Perform comprehensive contrast analysis between ALL objects"""
+        """Perform comprehensive contrast analysis between adjacent objects only"""
         h, w = segmentation.shape
         
         # Initialize results with ALL required keys
@@ -181,7 +253,7 @@ class RobustContrastAnalyzer:
             'high_issues': [],
             'medium_issues': [],
             'low_issues': [],
-            'good_contrasts': [],  # ENSURE this key exists
+            'good_contrasts': [],
             'visualization': image.copy(),
             'statistics': {},
             'detailed_analysis': []
@@ -194,7 +266,7 @@ class RobustContrastAnalyzer:
         logger.info(f"Found {len(unique_segments)} unique segments")
         
         for seg_id in unique_segments:
-            if seg_id == 0:  # Skip background
+            if seg_id == 0 or seg_id == 255:  # Skip background and ignore labels
                 continue
                 
             mask = segmentation == seg_id
@@ -208,7 +280,8 @@ class RobustContrastAnalyzer:
             if category is None:
                 continue
                 
-            color = self.extract_dominant_color(image, mask)
+            # Extract dominant color with clustering
+            color = self.extract_dominant_color(image, mask, use_clustering=True)
             
             segment_info[seg_id] = {
                 'category': category,
@@ -220,7 +293,7 @@ class RobustContrastAnalyzer:
             
         logger.info(f"Analyzing {len(segment_info)} segments for contrast")
         
-        # Analyze pairs
+        # Analyze pairs - ONLY ADJACENT OBJECTS
         total_pairs_checked = 0
         adjacent_pairs = 0
         issue_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
@@ -234,13 +307,15 @@ class RobustContrastAnalyzer:
                 info1 = segment_info[seg_id1]
                 info2 = segment_info[seg_id2]
                 
-                # Check if segments are adjacent
+                # Check if segments are adjacent - THIS IS CRITICAL
                 boundary = self.find_adjacent_segments(info1['mask'], info2['mask'])
                 is_adjacent = np.any(boundary)
                 
-                if is_adjacent:
-                    adjacent_pairs += 1
+                if not is_adjacent:
+                    # Skip non-adjacent pairs
+                    continue
                 
+                adjacent_pairs += 1
                 total_pairs_checked += 1
                 
                 # Calculate contrast and similarity
@@ -273,67 +348,65 @@ class RobustContrastAnalyzer:
                     issues.append(f"Similar hues: {similarity['hue_difference_degrees']:.1f}° apart")
                     severity = 'high' if severity is None else severity
                 
+                # LAB distance check (perceptual uniformity)
+                if similarity['lab_distance'] < 20:
+                    issues.append(f"Perceptually similar (LAB distance: {similarity['lab_distance']:.1f})")
+                    severity = 'high' if severity is None else severity
+                
                 # Determine final severity based on relationship
                 cat1, cat2 = info1['category'], info2['category']
-                if (cat1, cat2) in self.critical_safety_pairs and severity:
-                    severity = 'critical'
-                elif (cat1, cat2) in self.high_priority_pairs and severity == 'medium':
-                    severity = 'high'
+                if (cat1, cat2) in self.critical_safety_pairs or (cat2, cat1) in self.critical_safety_pairs:
+                    if severity:
+                        severity = 'critical'
+                elif (cat1, cat2) in self.high_priority_pairs or (cat2, cat1) in self.high_priority_pairs:
+                    if severity == 'medium':
+                        severity = 'high'
                 
                 # Create issue or good contrast
                 if issues:
                     description = f"{cat1} vs {cat2}"
-                    if (cat1, cat2) in self.critical_safety_pairs:
+                    if ((cat1, cat2) in self.critical_safety_pairs or 
+                        (cat2, cat1) in self.critical_safety_pairs):
                         description = f"SAFETY CRITICAL: {description}"
                     
                     issue = {
                         'categories': (cat1, cat2),
                         'contrast_ratio': wcag_contrast,
                         'boundary_area': np.sum(boundary),
+                        'boundary_length': len(np.where(boundary)[0]),
                         'description': description,
                         'priority': severity,
-                        'issues': issues
+                        'issues': issues,
+                        'color1': info1['color'].tolist(),
+                        'color2': info2['color'].tolist()
                     }
                     
-                    # Visualize and categorize
-                    if is_adjacent and np.any(boundary):
-                        if severity == 'critical':
-                            results['visualization'][boundary] = [255, 0, 0]  # Red
-                            results['critical_issues'].append(issue)
-                            issue_counts['critical'] += 1
-                        elif severity == 'high':
-                            results['visualization'][boundary] = [255, 165, 0]  # Orange
-                            results['high_issues'].append(issue)
-                            issue_counts['high'] += 1
-                        elif severity == 'medium':
-                            results['visualization'][boundary] = [255, 255, 0]  # Yellow
-                            results['medium_issues'].append(issue)
-                            issue_counts['medium'] += 1
-                        else:
-                            results['visualization'][boundary] = [255, 255, 128]  # Light yellow
-                            results['low_issues'].append(issue)
-                            issue_counts['low'] += 1
+                    # Visualize on boundary
+                    if severity == 'critical':
+                        results['visualization'][boundary] = [255, 0, 0]  # Red
+                        results['critical_issues'].append(issue)
+                        issue_counts['critical'] += 1
+                    elif severity == 'high':
+                        results['visualization'][boundary] = [255, 165, 0]  # Orange
+                        results['high_issues'].append(issue)
+                        issue_counts['high'] += 1
+                    elif severity == 'medium':
+                        results['visualization'][boundary] = [255, 255, 0]  # Yellow
+                        results['medium_issues'].append(issue)
+                        issue_counts['medium'] += 1
                     else:
-                        # Add to lists even if not adjacent
-                        if severity == 'critical':
-                            results['critical_issues'].append(issue)
-                            issue_counts['critical'] += 1
-                        elif severity == 'high':
-                            results['high_issues'].append(issue)
-                            issue_counts['high'] += 1
-                        elif severity == 'medium':
-                            results['medium_issues'].append(issue)
-                            issue_counts['medium'] += 1
-                        else:
-                            results['low_issues'].append(issue)
-                            issue_counts['low'] += 1
+                        results['visualization'][boundary] = [255, 255, 128]  # Light yellow
+                        results['low_issues'].append(issue)
+                        issue_counts['low'] += 1
                 else:
-                    # Good contrast - ALWAYS add to good_contrasts
+                    # Good contrast - add to good_contrasts
                     if wcag_contrast >= self.alzheimer_threshold and similarity['combined_similarity'] < 0.7:
                         results['good_contrasts'].append({
                             'categories': (cat1, cat2),
                             'contrast_ratio': wcag_contrast,
-                            'hue_difference': similarity['hue_difference_degrees']
+                            'hue_difference': similarity['hue_difference_degrees'],
+                            'color1': info1['color'].tolist(),
+                            'color2': info2['color'].tolist()
                         })
                 
                 # Add to detailed analysis
@@ -341,12 +414,13 @@ class RobustContrastAnalyzer:
                     'categories': (cat1, cat2),
                     'wcag_contrast': wcag_contrast,
                     'similarity_metrics': similarity,
-                    'is_adjacent': is_adjacent,
+                    'is_adjacent': True,  # We only analyze adjacent pairs
+                    'boundary_pixels': np.sum(boundary),
                     'severity': severity,
                     'issues': issues
                 })
         
-        # ENSURE all statistics are present
+        # Compile statistics
         results['statistics'] = {
             'total_segments': len(segment_info),
             'total_pairs_checked': total_pairs_checked,
@@ -358,10 +432,11 @@ class RobustContrastAnalyzer:
             'low_count': issue_counts['low'],
             'good_contrast_count': len(results['good_contrasts']),
             'wcag_threshold': self.wcag_threshold,
-            'alzheimer_threshold': self.alzheimer_threshold
+            'alzheimer_threshold': self.alzheimer_threshold,
+            'adjacency_only': True  # Confirm we only check adjacent objects
         }
         
-        logger.info(f"Contrast analysis complete: {total_pairs_checked} pairs checked, "
+        logger.info(f"Contrast analysis complete: {adjacent_pairs} adjacent pairs analyzed, "
                    f"{sum(issue_counts.values())} issues found, "
                    f"{len(results['good_contrasts'])} good contrasts")
         

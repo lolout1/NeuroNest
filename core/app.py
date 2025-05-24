@@ -1,11 +1,12 @@
-"""Main application class integrating all components - Enhanced and Fixed."""
+"""Main application class integrating all components - Enhanced with High Resolution and Labeling."""
 
 import os
 import cv2
 import numpy as np
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
+# Use the local oneformer manager, not the library
 from oneformer_local import OneFormerManager
 from blackspot import BlackspotDetector
 from contrast import RobustContrastAnalyzer
@@ -15,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class NeuroNestApp:
-    """Main application class with enhanced integration and error handling"""
+    """Main application class with enhanced integration, high resolution, and labeling support"""
 
     def __init__(self):
         self.oneformer = OneFormerManager()
         self.blackspot_detector = None
+        self.use_high_res = False
         
         # Initialize contrast analyzer with proper parameters
         try:
@@ -37,12 +39,15 @@ class NeuroNestApp:
             
         self.initialized = False
 
-    def initialize(self, blackspot_model_path: str = "./blackspot/model_0004999.pth"):
+    def initialize(self, blackspot_model_path: str = "./blackspot/model_0004999.pth", 
+                   use_high_res: bool = False):
         """Initialize all components with robust error handling"""
-        logger.info("Initializing NeuroNest application...")
+        logger.info(f"Initializing NeuroNest application (high_res={use_high_res})...")
+        
+        self.use_high_res = use_high_res
 
-        # Initialize OneFormer
-        oneformer_success = self.oneformer.initialize()
+        # Initialize OneFormer with optional high resolution
+        oneformer_success = self.oneformer.initialize(use_high_res=use_high_res)
         if not oneformer_success:
             logger.error("Failed to initialize OneFormer - this is required")
             return False, False
@@ -70,8 +75,9 @@ class NeuroNestApp:
                      blackspot_threshold: float = 0.5,
                      contrast_threshold: float = 7.0,
                      enable_blackspot: bool = True,
-                     enable_contrast: bool = True) -> Dict:
-        """Perform comprehensive image analysis with enhanced error handling"""
+                     enable_contrast: bool = True,
+                     show_labels: bool = True) -> Dict:
+        """Perform comprehensive image analysis with enhanced error handling and labeling"""
 
         if not self.initialized:
             return {"error": "Application not properly initialized"}
@@ -93,17 +99,19 @@ class NeuroNestApp:
                 'segmentation': None,
                 'blackspot': None,
                 'contrast': None,
-                'statistics': {}
+                'statistics': {},
+                'show_labels': show_labels
             }
 
             # 1. Semantic Segmentation (always performed)
-            logger.info("Running semantic segmentation...")
+            logger.info("Running semantic segmentation with labeling support...")
             try:
-                seg_mask, seg_visualization = self.oneformer.semantic_segmentation(image_rgb)
+                seg_mask, seg_visualization, labeled_visualization = self.oneformer.semantic_segmentation(image_rgb)
                 logger.info(f"Segmentation completed - mask shape: {seg_mask.shape}, unique classes: {len(np.unique(seg_mask))}")
 
                 results['segmentation'] = {
                     'visualization': seg_visualization,
+                    'labeled_visualization': labeled_visualization,
                     'mask': seg_mask
                 }
 
@@ -114,32 +122,54 @@ class NeuroNestApp:
 
             except Exception as e:
                 logger.error(f"Segmentation failed: {e}")
+                import traceback
+                traceback.print_exc()
                 return {"error": f"Segmentation failed: {str(e)}"}
 
-            # 2. Enhanced Blackspot Detection
+            # 2. Enhanced Blackspot Detection (Floor-only)
             if enable_blackspot:
-                logger.info("Running enhanced blackspot detection...")
+                logger.info("Running enhanced blackspot detection (floors only)...")
                 try:
+                    # Resize floor_prior to match original image dimensions if needed
+                    h_orig, w_orig = image_rgb.shape[:2]
+                    h_seg, w_seg = seg_mask.shape
+                    
+                    if (h_orig, w_orig) != (h_seg, w_seg):
+                        # Resize floor prior back to original image size
+                        floor_prior_original = cv2.resize(
+                            floor_prior.astype(np.uint8),
+                            (w_orig, h_orig),
+                            interpolation=cv2.INTER_NEAREST
+                        ).astype(bool)
+                    else:
+                        floor_prior_original = floor_prior
+                    
                     if self.blackspot_detector is not None:
                         # Use trained model + color-based detection
-                        blackspot_results = self.blackspot_detector.detect_blackspots(image_rgb, floor_prior)
+                        blackspot_results = self.blackspot_detector.detect_blackspots(
+                            image_rgb, floor_prior_original
+                        )
                         logger.info(f"Model-based blackspot detection completed - found {blackspot_results.get('num_detections', 0)} blackspots")
                     else:
                         # Fallback to pure color-based detection
                         logger.info("Using color-based blackspot detection (model not available)")
                         dummy_detector = BlackspotDetector("")  # No model path
-                        blackspot_results = dummy_detector.detect_blackspots(image_rgb, floor_prior)
+                        blackspot_results = dummy_detector.detect_blackspots(
+                            image_rgb, floor_prior_original
+                        )
                         logger.info(f"Color-based blackspot detection completed - found {blackspot_results.get('num_detections', 0)} blackspots")
                     
                     results['blackspot'] = blackspot_results
 
                 except Exception as e:
                     logger.error(f"Blackspot detection failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                     results['blackspot'] = None
 
-            # 3. Ultra-Comprehensive Contrast Analysis
+            # 3. Ultra-Comprehensive Contrast Analysis (Adjacent objects only)
             if enable_contrast:
-                logger.info("Running ultra-comprehensive contrast analysis...")
+                logger.info("Running ultra-comprehensive contrast analysis (adjacent objects only)...")
                 try:
                     # Update analyzer thresholds safely
                     if hasattr(self.contrast_analyzer, 'wcag_threshold'):
@@ -147,13 +177,36 @@ class NeuroNestApp:
                     if hasattr(self.contrast_analyzer, 'alzheimer_threshold'):
                         self.contrast_analyzer.alzheimer_threshold = contrast_threshold
 
+                    # Get the appropriate resolution config
+                    config = ONEFORMER_CONFIG["ADE20K"]
+                    if self.use_high_res:
+                        target_width = config.get("high_res_width", 1280)
+                        target_height = config.get("high_res_height", 1280)
+                    else:
+                        target_width = config["width"]
+                        target_height = config.get("height", config["width"])
+
                     # Use the resized image for contrast analysis to match segmentation
-                    width = ONEFORMER_CONFIG["ADE20K"]["width"]
                     h, w = image_rgb.shape[:2]
-                    if w != width:
-                        scale = width / w
+                    if w != target_width or h != target_height:
+                        scale = min(target_width / w, target_height / h)
+                        new_w = int(w * scale)
                         new_h = int(h * scale)
-                        image_for_contrast = cv2.resize(image_rgb, (width, new_h))
+                        image_for_contrast = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                        
+                        # Pad if needed
+                        if new_w < target_width or new_h < target_height:
+                            pad_w = target_width - new_w
+                            pad_h = target_height - new_h
+                            pad_left = pad_w // 2
+                            pad_top = pad_h // 2
+                            image_for_contrast = cv2.copyMakeBorder(
+                                image_for_contrast,
+                                pad_top, pad_h - pad_top,
+                                pad_left, pad_w - pad_left,
+                                cv2.BORDER_CONSTANT,
+                                value=[0, 0, 0]
+                            )
                         logger.info(f"Resized image for contrast analysis: {image_for_contrast.shape}")
                     else:
                         image_for_contrast = image_rgb
@@ -198,7 +251,8 @@ class NeuroNestApp:
                 unique_classes = np.unique(results['segmentation']['mask'])
                 stats['segmentation'] = {
                     'num_classes': len(unique_classes),
-                    'image_size': results['segmentation']['mask'].shape
+                    'image_size': results['segmentation']['mask'].shape,
+                    'resolution_mode': 'high' if self.use_high_res else 'standard'
                 }
             except Exception as e:
                 logger.warning(f"Error generating segmentation stats: {e}")
@@ -245,6 +299,7 @@ class NeuroNestApp:
                 
                 stats['contrast']['risk_level'] = risk_level
                 stats['contrast']['risk_score'] = critical_count * 3 + total_issues
+                stats['contrast']['adjacency_based'] = True  # Confirm we only check adjacent objects
                 
             except Exception as e:
                 logger.warning(f"Error generating contrast stats: {e}")

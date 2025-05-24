@@ -1,0 +1,10 @@
+libglib2.0-0
+libsm6
+libxext6
+libxrender-dev
+libgomp1
+libglu1-mesa
+libgl1-mesa-glx
+libopencv-dev
+python3-opencv
+ffmpeg
