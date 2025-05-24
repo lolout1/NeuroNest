@@ -1,69 +1,62 @@
-# Core dependencies (match your server versions)
+# Core ML dependencies FIRST (detectron2 needs these)
 torch==1.10.1
 torchvision==0.11.2
 numpy==1.24.4
-opencv-python==4.11.0.86
-Pillow==10.2.0
 
-# Scientific computing (match your versions)
+# Scientific computing (required before detectron2)
 scipy==1.10.1
 matplotlib==3.7.5
-scikit-learn==1.3.2
-scikit-image==0.21.0
+Pillow==10.2.0
 
-# Detectron2 - Install after torch (CPU version for HuggingFace Spaces)
+# Computer vision basics
+opencv-python==4.11.0.86
+
+# AFTER torch is installed - Detectron2
 detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
 
-# OneFormer dependencies (based on your project structure)
+# OneFormer and related (after detectron2)
 git+https://github.com/SHI-Labs/OneFormer.git
 timm==0.4.12
 transformers==4.33.2
 huggingface-hub==0.20.3
 
-# Web interface (match your gradio version)
-gradio==4.44.1
-streamlit==1.26.0
+# Additional ML libraries
+scikit-learn==1.3.2
+scikit-image==0.21.0
 
-# Computer vision and image processing
+# Web interface
+gradio==4.44.1
+
+# Configuration and utilities
+omegaconf==2.3.0
+pyyaml==6.0.1
+tqdm==4.66.1
+requests==2.31.0
+psutil==5.9.5
+
+# Image processing
 imageio==2.31.5
 tifffile==2023.7.10
-PyWavelets==1.4.1
 
 # Color science for contrast analysis
 colorspacious==1.1.2
 colour-science==0.4.2
-colorsys  # Built-in Python module
 
-# YAML and configuration
-omegaconf==2.3.0
-pyyaml==6.0.1
-
-# Utilities
-tqdm==4.66.1
-requests==2.31.0
-psutil==5.9.5
+# Additional utilities
 packaging==23.1
-
-# Additional ML/CV dependencies
 fairscale==0.4.13
 einops==0.7.0
 fvcore==0.1.5.post20221221
 
 # For dataset handling
 pycocotools==2.0.7
-cityscapesScripts==2.2.2
 
-# Threading and parallel processing
+# Threading optimization
 threadpoolctl==3.2.0
 
-# For improved performance
+# Performance optimization
 diffdist==0.1
 
-# Development and debugging (optional)
-ipython==8.12.0
-jupyter==1.0.0
-
-# Additional utilities for your NeuroNest project
+# Additional scientific libraries
 pandas==2.0.3
 seaborn==0.12.2
-plotly==5.15.0
