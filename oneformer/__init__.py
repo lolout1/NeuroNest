@@ -1,7 +1,9 @@
-# OneFormer package
-from . import config
-from . import data
+# Copyright (c) Facebook, Inc. and its affiliates.
+from . import data  # register all new datasets
 from . import modeling
-from . import utils
 
-__version__ = "1.0.0"
+# config
+from .config import *
+
+# models
+from .oneformer_model import OneFormer
