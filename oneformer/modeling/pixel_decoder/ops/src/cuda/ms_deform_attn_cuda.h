@@ -1,3 +1,35 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:402ad3a8815d8ee6baeadb73d80444f3d6d286af46feed8bc50162f9cfde83a0
-size 1283
+/*!
+**************************************************************************************************
+* Deformable DETR
+* Copyright (c) 2020 SenseTime. All Rights Reserved.
+* Licensed under the Apache License, Version 2.0 [see LICENSE for details]
+**************************************************************************************************
+* Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
+**************************************************************************************************
+*/
+
+/*!
+* Copyright (c) Facebook, Inc. and its affiliates.
+* Modified by Bowen Cheng from https://github.com/fundamentalvision/Deformable-DETR
+*/
+
+#pragma once
+#include <torch/extension.h>
+
+at::Tensor ms_deform_attn_cuda_forward(
+    const at::Tensor &value, 
+    const at::Tensor &spatial_shapes,
+    const at::Tensor &level_start_index,
+    const at::Tensor &sampling_loc,
+    const at::Tensor &attn_weight,
+    const int im2col_step);
+
+std::vector<at::Tensor> ms_deform_attn_cuda_backward(
+    const at::Tensor &value, 
+    const at::Tensor &spatial_shapes,
+    const at::Tensor &level_start_index,
+    const at::Tensor &sampling_loc,
+    const at::Tensor &attn_weight,
+    const at::Tensor &grad_output,
+    const int im2col_step);
+

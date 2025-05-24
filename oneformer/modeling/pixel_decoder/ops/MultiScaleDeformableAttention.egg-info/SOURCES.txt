@@ -1,3 +1,12 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:15c9f968620235ce469dfd4ad3460542a6e8578b5263ccd9ae2ee76a29b904d6
-size 618
+setup.py
+/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/src/vision.cpp
+/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/src/cpu/ms_deform_attn_cpu.cpp
+/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/src/cuda/ms_deform_attn_cuda.cu
+MultiScaleDeformableAttention.egg-info/PKG-INFO
+MultiScaleDeformableAttention.egg-info/SOURCES.txt
+MultiScaleDeformableAttention.egg-info/dependency_links.txt
+MultiScaleDeformableAttention.egg-info/top_level.txt
+functions/__init__.py
+functions/ms_deform_attn_func.py
+modules/__init__.py
+modules/ms_deform_attn.py

@@ -17,3 +17,7 @@
 detectron2/** filter=lfs diff=lfs merge=lfs -text
 detectron2/ filter=lfs diff=lfs merge=lfs -text
 detectron2/* filter=lfs diff=lfs merge=lfs -text
+oneformer/**/*.pth filter=lfs diff=lfs merge=lfs -text
+oneformer/**/*.pkl filter=lfs diff=lfs merge=lfs -text
+oneformer/**/*.pt filter=lfs diff=lfs merge=lfs -text
+oneformer/**/*.bin filter=lfs diff=lfs merge=lfs -text

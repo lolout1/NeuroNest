@@ -1,3 +1,21 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:4ed8ff5bcf34126aaeec6d28d8cfc985d7534451c5df6d7bada273ec51676284
-size 942
+/*!
+**************************************************************************************************
+* Deformable DETR
+* Copyright (c) 2020 SenseTime. All Rights Reserved.
+* Licensed under the Apache License, Version 2.0 [see LICENSE for details]
+**************************************************************************************************
+* Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
+**************************************************************************************************
+*/
+
+/*!
+* Copyright (c) Facebook, Inc. and its affiliates.
+* Modified by Bowen Cheng from https://github.com/fundamentalvision/Deformable-DETR
+*/
+
+#include "ms_deform_attn.h"
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("ms_deform_attn_forward", &ms_deform_attn_forward, "ms_deform_attn_forward");
+  m.def("ms_deform_attn_backward", &ms_deform_attn_backward, "ms_deform_attn_backward");
+}

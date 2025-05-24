@@ -1,3 +1,6 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:1c137c554f46186439e24e678b07b04c0453022fdfd1e18d65b33e4ce07fa441
-size 233
+Metadata-Version: 2.1
+Name: MultiScaleDeformableAttention
+Version: 1.0
+Summary: PyTorch Wrapper for CUDA Functions of Multi-Scale Deformable Attention
+Home-page: https://github.com/fundamentalvision/Deformable-DETR
+Author: Weijie Su
