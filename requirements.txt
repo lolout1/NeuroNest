@@ -1,31 +1,69 @@
-# Core dependencies
-gradio==4.19.2
-torch==2.0.1+cpu
-torchvision==0.15.2+cpu
-numpy==1.24.3
-opencv-python==4.8.1.78
+# Core dependencies (match your server versions)
+torch==1.10.1
+torchvision==0.11.2
+numpy==1.24.4
+opencv-python==4.11.0.86
 Pillow==10.2.0
 
-# Detectron2 CPU version
-detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
-
-# OneFormer (will be installed from GitHub)
-git+https://github.com/SHI-Labs/OneFormer.git
-
-# Scientific computing
+# Scientific computing (match your versions)
 scipy==1.10.1
+matplotlib==3.7.5
 scikit-learn==1.3.2
 scikit-image==0.21.0
 
-# Additional dependencies
+# Detectron2 - Install after torch (CPU version for HuggingFace Spaces)
+detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
+
+# OneFormer dependencies (based on your project structure)
+git+https://github.com/SHI-Labs/OneFormer.git
+timm==0.4.12
+transformers==4.33.2
 huggingface-hub==0.20.3
-matplotlib==3.7.2
-tqdm==4.66.1
+
+# Web interface (match your gradio version)
+gradio==4.44.1
+streamlit==1.26.0
+
+# Computer vision and image processing
+imageio==2.31.5
+tifffile==2023.7.10
+PyWavelets==1.4.1
+
+# Color science for contrast analysis
+colorspacious==1.1.2
+colour-science==0.4.2
+colorsys  # Built-in Python module
+
+# YAML and configuration
 omegaconf==2.3.0
+pyyaml==6.0.1
+
+# Utilities
+tqdm==4.66.1
+requests==2.31.0
+psutil==5.9.5
+packaging==23.1
+
+# Additional ML/CV dependencies
 fairscale==0.4.13
-timm==0.9.12
 einops==0.7.0
+fvcore==0.1.5.post20221221
+
+# For dataset handling
+pycocotools==2.0.7
+cityscapesScripts==2.2.2
+
+# Threading and parallel processing
+threadpoolctl==3.2.0
+
+# For improved performance
 diffdist==0.1
 
-# For CPU optimization
-threadpoolctl==3.2.0
+# Development and debugging (optional)
+ipython==8.12.0
+jupyter==1.0.0
+
+# Additional utilities for your NeuroNest project
+pandas==2.0.3
+seaborn==0.12.2
+plotly==5.15.0

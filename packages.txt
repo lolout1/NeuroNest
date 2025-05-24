@@ -3,8 +3,10 @@ libsm6
 libxext6
 libxrender-dev
 libgomp1
-libglu1-mesa
 libgl1-mesa-glx
-libopencv-dev
-python3-opencv
 ffmpeg
+git
+cmake
+build-essential
+python3-dev
+libopencv-dev
