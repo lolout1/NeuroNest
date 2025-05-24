@@ -4,42 +4,47 @@ import numpy as np
 import cv2
 import torch
 import logging
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 
 class BlackspotDetector:
-    """Detects black spots on floors using OneFormer segmentation and pixel-based methods"""
+    """Detects black spots ONLY on floors using segmentation and pixel-based methods"""
     
     def __init__(self, model_path: str = ""):
         self.model_path = model_path
         self.initialized = False
         
-        # Floor-related class IDs from ADE20K (oneformer uses these)
+        # STRICT floor-only class IDs from ADE20K
         self.floor_class_ids = {
             3: 'floor',
             4: 'wood_floor', 
-            13: 'earth',
             28: 'rug',
-            29: 'field',
+            29: 'carpet',
+            46: 'sand',  # For outdoor patios
             52: 'path',
-            53: 'stairs',
             54: 'runway',
             78: 'mat',
             91: 'dirt_track'
         }
         
+        # Classes that are NEVER floors (to double-check)
+        self.non_floor_classes = {
+            15: 'table', 33: 'desk', 56: 'pool_table', 64: 'coffee_table',
+            5: 'ceiling', 6: 'sky', 0: 'wall', 1: 'building',
+            7: 'bed', 10: 'cabinet', 19: 'chair', 23: 'sofa'
+        }
+        
     def initialize(self, threshold: float = 0.5):
         """Initialize the detector"""
-        # Always return True since we use pixel-based detection
         self.initialized = True
-        logger.info("Blackspot detector initialized (pixel-based mode)")
+        logger.info("Blackspot detector initialized (enhanced floor-only mode)")
         return True
     
     def detect_blackspots(self, image: np.ndarray, floor_mask: np.ndarray = None, 
                          segmentation_mask: np.ndarray = None) -> Dict:
-        """Detect blackspots using enhanced pixel-based methods with floor segmentation"""
+        """Detect blackspots ONLY on floor surfaces"""
         h, w = image.shape[:2]
         
         results = {
@@ -51,46 +56,70 @@ class BlackspotDetector:
             'coverage_percentage': 0,
             'avg_confidence': 0,
             'risk_score': 0,
-            'detection_method': 'pixel_based_enhanced',
+            'detection_method': 'floor_only_enhanced',
             'confidence_scores': {},
-            'floor_breakdown': {}
+            'floor_breakdown': {},
+            'non_floor_blackspots_ignored': 0
         }
         
-        # Extract floor areas from segmentation if available
+        # CRITICAL: Create strict floor mask
         if segmentation_mask is not None:
-            enhanced_floor_mask = self._extract_floor_areas_from_segmentation(segmentation_mask)
-            logger.info(f"Enhanced floor extraction: {np.sum(enhanced_floor_mask)} pixels from segmentation")
+            strict_floor_mask = self._create_strict_floor_mask(segmentation_mask)
+            
+            # Log what we found
+            for class_id in np.unique(segmentation_mask):
+                if class_id in self.floor_class_ids:
+                    pixels = np.sum(segmentation_mask == class_id)
+                    logger.info(f"Floor type found: {self.floor_class_ids[class_id]} - {pixels} pixels")
+                elif class_id in self.non_floor_classes:
+                    pixels = np.sum(segmentation_mask == class_id)
+                    logger.debug(f"Non-floor ignored: {self.non_floor_classes[class_id]} - {pixels} pixels")
         elif floor_mask is not None:
-            enhanced_floor_mask = floor_mask
-            logger.info(f"Using provided floor mask: {np.sum(enhanced_floor_mask)} pixels")
+            strict_floor_mask = floor_mask
+            logger.info(f"Using provided floor mask: {np.sum(floor_mask)} pixels")
         else:
-            # Fallback: assume bottom 30% of image is floor
-            enhanced_floor_mask = np.zeros((h, w), dtype=bool)
-            enhanced_floor_mask[int(h*0.7):, :] = True
-            logger.info(f"Using fallback floor assumption: {np.sum(enhanced_floor_mask)} pixels")
+            # Ultra-conservative fallback: only bottom 20% of image
+            strict_floor_mask = np.zeros((h, w), dtype=bool)
+            strict_floor_mask[int(h*0.8):, :] = True
+            logger.warning(f"No segmentation available - using bottom 20% only: {np.sum(strict_floor_mask)} pixels")
         
-        if np.sum(enhanced_floor_mask) == 0:
-            logger.warning("No floor area detected for blackspot analysis")
+        if np.sum(strict_floor_mask) == 0:
+            logger.warning("No floor area detected - cannot detect blackspots")
             return results
         
-        results['floor_area'] = np.sum(enhanced_floor_mask)
+        results['floor_area'] = np.sum(strict_floor_mask)
         
-        # Enhanced blackspot detection
-        blackspot_mask, confidence = self._detect_blackspots_enhanced(image, enhanced_floor_mask)
+        # Detect ALL dark areas first (for comparison)
+        all_blackspots = self._detect_all_blackspots(image)
         
-        # Filter blackspots by size (minimum 50x50 pixels)
+        # Count how many blackspots we're ignoring (not on floor)
+        non_floor_blackspots = all_blackspots & ~strict_floor_mask
+        results['non_floor_blackspots_ignored'] = np.sum(non_floor_blackspots)
+        
+        if results['non_floor_blackspots_ignored'] > 0:
+            logger.info(f"Ignored {results['non_floor_blackspots_ignored']} blackspot pixels on non-floor surfaces")
+        
+        # ONLY keep blackspots that are on the floor
+        floor_only_blackspots = all_blackspots & strict_floor_mask
+        
+        # Enhanced filtering for floor blackspots
+        blackspot_mask, confidence = self._enhance_floor_blackspots(
+            image, floor_only_blackspots, strict_floor_mask
+        )
+        
+        # Size filtering - remove tiny spots
         final_mask = self._filter_blackspots_by_size(blackspot_mask, min_dimension=50)
         
         # Calculate statistics
         blackspot_pixels = np.sum(final_mask)
         results['blackspot_mask'] = final_mask
         results['blackspot_area'] = blackspot_pixels
-        results['coverage_percentage'] = (blackspot_pixels / results['floor_area']) * 100
+        results['coverage_percentage'] = (blackspot_pixels / results['floor_area']) * 100 if results['floor_area'] > 0 else 0
         results['avg_confidence'] = confidence
         
         # Count individual blackspots
         num_labels, labels = cv2.connectedComponents(final_mask.astype(np.uint8))
-        results['num_detections'] = num_labels - 1  # Subtract background
+        results['num_detections'] = num_labels - 1
         
         # Risk score calculation
         coverage = results['coverage_percentage']
@@ -107,147 +136,136 @@ class BlackspotDetector:
         else:
             results['risk_score'] = 0
         
-        # Create enhanced visualizations
+        # Create visualizations
         results['enhanced_views'] = self._create_enhanced_visualizations(
-            image, final_mask, enhanced_floor_mask, segmentation_mask
+            image, final_mask, strict_floor_mask, segmentation_mask, all_blackspots
         )
         
-        # Floor breakdown if segmentation available
+        # Floor type breakdown
         if segmentation_mask is not None:
             results['floor_breakdown'] = self._analyze_floor_types(
                 segmentation_mask, final_mask
             )
         
-        logger.info(f"Enhanced blackspot detection complete: {results['num_detections']} spots, "
-                   f"{results['coverage_percentage']:.2f}% coverage, "
-                   f"confidence: {confidence:.3f}")
+        logger.info(f"Floor-only blackspot detection: {results['num_detections']} spots on floor, "
+                   f"{results['coverage_percentage']:.2f}% floor coverage, "
+                   f"ignored {results['non_floor_blackspots_ignored']} non-floor pixels")
         
         return results
     
-    def _extract_floor_areas_from_segmentation(self, segmentation: np.ndarray) -> np.ndarray:
-        """Extract floor areas from OneFormer segmentation"""
+    def _create_strict_floor_mask(self, segmentation: np.ndarray) -> np.ndarray:
+        """Create a strict floor-only mask from segmentation"""
         floor_mask = np.zeros_like(segmentation, dtype=bool)
         
-        # Check for each floor-related class
-        detected_classes = []
-        for class_id, class_name in self.floor_class_ids.items():
-            class_pixels = np.sum(segmentation == class_id)
-            if class_pixels > 0:
-                floor_mask |= (segmentation == class_id)
-                detected_classes.append(f"{class_name}({class_pixels}px)")
+        # Only include known floor classes
+        for class_id in self.floor_class_ids.keys():
+            floor_mask |= (segmentation == class_id)
         
-        if detected_classes:
-            logger.info(f"Floor classes detected: {', '.join(detected_classes)}")
+        # Additional validation: remove any floor pixels that are too high in the image
+        # (floors should generally be in the lower portion)
+        h, w = floor_mask.shape
+        for y in range(int(h * 0.3)):  # Top 30% of image
+            if np.sum(floor_mask[y, :]) > w * 0.8:  # If most of row is "floor"
+                # This might be a misclassification (e.g., ceiling classified as floor)
+                logger.warning(f"Removing suspected misclassified floor at row {y}")
+                floor_mask[y, :] = False
         
         return floor_mask
     
-    def _detect_blackspots_enhanced(self, image: np.ndarray, floor_mask: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Enhanced blackspot detection with multiple methods"""
-        
-        # Convert to different color spaces for analysis
+    def _detect_all_blackspots(self, image: np.ndarray) -> np.ndarray:
+        """Detect ALL dark areas in the image (before floor filtering)"""
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
         lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
         
-        # Method 1: Pure black detection (very strict)
-        very_black_threshold = 25
-        very_black_mask = (gray < very_black_threshold) & floor_mask
+        # Multiple detection methods
+        very_black = gray < 30
+        dark = gray < 50
         
-        # Method 2: Dark detection with color variance check
-        dark_threshold = 50
-        dark_mask = (gray < dark_threshold) & floor_mask
-        
-        # Color variance check to distinguish black from dark gray
+        # Color variance check
         b, g, r = cv2.split(image)
         color_variance = np.std([b, g, r], axis=0)
-        is_colorful = color_variance > 15  # Areas with color variation
-        is_truly_black = color_variance < 10  # Very low color variation = black/gray
+        low_variance = color_variance < 10
         
-        # Method 3: HSV-based black detection
-        # Black areas have low saturation and low value
-        low_saturation = hsv[:, :, 1] < 30  # Low saturation
-        low_value = hsv[:, :, 2] < dark_threshold  # Low brightness
-        hsv_black_mask = low_saturation & low_value & floor_mask
+        # HSV black detection
+        low_saturation = hsv[:, :, 1] < 30
+        low_value = hsv[:, :, 2] < 50
+        hsv_black = low_saturation & low_value
         
-        # Method 4: LAB color space detection
-        # In LAB, black areas have low L (lightness) values
-        lab_dark_mask = (lab[:, :, 0] < 40) & floor_mask
+        # LAB detection
+        lab_black = lab[:, :, 0] < 40
         
-        # Combine methods with priority
-        blackspot_candidates = (
-            very_black_mask |  # Highest priority: very black areas
-            (dark_mask & is_truly_black) |  # Dark areas that are truly black, not gray
-            (hsv_black_mask & ~is_colorful) |  # HSV black that isn't colorful
-            lab_dark_mask  # LAB dark areas
-        )
+        # Combine all methods
+        all_black = very_black | (dark & low_variance) | hsv_black | lab_black
         
-        # Morphological operations to clean up
+        # Clean up with morphology
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        blackspot_candidates = cv2.morphologyEx(
-            blackspot_candidates.astype(np.uint8), 
-            cv2.MORPH_CLOSE, 
-            kernel
-        )
-        blackspot_candidates = cv2.morphologyEx(
-            blackspot_candidates, 
-            cv2.MORPH_OPEN, 
-            kernel
-        )
+        all_black = cv2.morphologyEx(all_black.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+        all_black = cv2.morphologyEx(all_black, cv2.MORPH_OPEN, kernel)
         
-        # Calculate confidence based on detection strength
-        if np.any(blackspot_candidates):
-            # Higher confidence for very black areas
-            very_black_ratio = np.sum(very_black_mask) / max(1, np.sum(blackspot_candidates))
-            darkness_values = gray[blackspot_candidates.astype(bool)]
-            avg_darkness = np.mean(darkness_values)
-            
-            # Confidence calculation
-            darkness_confidence = 1.0 - (avg_darkness / 50)  # Normalize by threshold
-            coverage_confidence = min(1.0, np.sum(blackspot_candidates) / 1000)  # Size factor
-            purity_confidence = very_black_ratio  # How much is very black vs just dark
-            
-            confidence = (darkness_confidence * 0.5 + 
-                         coverage_confidence * 0.2 + 
-                         purity_confidence * 0.3)
-        else:
-            confidence = 0.0
-        
-        return blackspot_candidates.astype(bool), confidence
+        return all_black.astype(bool)
     
-    def _filter_blackspots_by_size(self, mask: np.ndarray, min_dimension: int = 50) -> np.ndarray:
-        """Filter blackspots to only include those larger than min_dimension in width or height"""
-        num_labels, labels = cv2.connectedComponents(mask.astype(np.uint8))
+    def _enhance_floor_blackspots(self, image: np.ndarray, initial_mask: np.ndarray, 
+                                 floor_mask: np.ndarray) -> Tuple[np.ndarray, float]:
+        """Enhance blackspot detection specifically for floor areas"""
+        if not np.any(initial_mask):
+            return initial_mask, 0.0
         
-        filtered_mask = np.zeros_like(mask, dtype=bool)
-        valid_spots = 0
+        # Additional validation for floor blackspots
+        enhanced_mask = initial_mask.copy()
+        
+        # Check each connected component
+        num_labels, labels = cv2.connectedComponents(initial_mask.astype(np.uint8))
         
         for label_id in range(1, num_labels):
             component = labels == label_id
             
-            # Get bounding box to check dimensions
+            # Validate this is really a blackspot on floor
+            component_pixels = image[component]
+            if len(component_pixels) > 0:
+                mean_brightness = np.mean(cv2.cvtColor(
+                    component_pixels.reshape(-1, 1, 3), cv2.COLOR_RGB2GRAY
+                ))
+                
+                # If too bright, remove it
+                if mean_brightness > 60:
+                    enhanced_mask[component] = False
+                    logger.debug(f"Removed false blackspot with brightness {mean_brightness}")
+        
+        # Calculate confidence
+        if np.any(enhanced_mask):
+            darkness_values = cv2.cvtColor(image[enhanced_mask].reshape(-1, 1, 3), 
+                                         cv2.COLOR_RGB2GRAY).flatten()
+            avg_darkness = np.mean(darkness_values)
+            confidence = 1.0 - (avg_darkness / 50)
+        else:
+            confidence = 0.0
+        
+        return enhanced_mask, confidence
+    
+    def _filter_blackspots_by_size(self, mask: np.ndarray, min_dimension: int = 50) -> np.ndarray:
+        """Filter blackspots by minimum size"""
+        num_labels, labels = cv2.connectedComponents(mask.astype(np.uint8))
+        
+        filtered_mask = np.zeros_like(mask, dtype=bool)
+        
+        for label_id in range(1, num_labels):
+            component = labels == label_id
+            
             y_coords, x_coords = np.where(component)
             if len(y_coords) == 0:
                 continue
                 
-            min_y, max_y = np.min(y_coords), np.max(y_coords)
-            min_x, max_x = np.min(x_coords), np.max(x_coords)
+            height = np.max(y_coords) - np.min(y_coords) + 1
+            width = np.max(x_coords) - np.min(x_coords) + 1
             
-            width = max_x - min_x + 1
-            height = max_y - min_y + 1
-            
-            # Keep if either dimension is >= min_dimension
             if width >= min_dimension or height >= min_dimension:
                 filtered_mask |= component
-                valid_spots += 1
-                logger.debug(f"Blackspot {label_id}: {width}x{height}px - KEPT")
-            else:
-                logger.debug(f"Blackspot {label_id}: {width}x{height}px - filtered out (too small)")
         
-        logger.info(f"Size filtering: {valid_spots}/{num_labels-1} blackspots kept (>={min_dimension}px)")
         return filtered_mask
     
     def _analyze_floor_types(self, segmentation: np.ndarray, blackspot_mask: np.ndarray) -> Dict:
-        """Analyze which types of floors have blackspots"""
+        """Analyze blackspots by floor type"""
         breakdown = {}
         
         for class_id, class_name in self.floor_class_ids.items():
@@ -268,63 +286,38 @@ class BlackspotDetector:
         return breakdown
     
     def _create_enhanced_visualizations(self, image: np.ndarray, blackspot_mask: np.ndarray, 
-                                      floor_mask: np.ndarray, segmentation_mask: np.ndarray = None) -> Dict[str, np.ndarray]:
+                                      floor_mask: np.ndarray, segmentation_mask: np.ndarray,
+                                      all_blackspots: np.ndarray) -> Dict[str, np.ndarray]:
         """Create comprehensive visualizations"""
         views = {}
         
-        # High contrast overlay
+        # Main visualization - blackspots on floor only
         overlay = image.copy()
-        overlay[blackspot_mask] = [255, 0, 0]  # Red for blackspots
+        overlay[blackspot_mask] = [255, 0, 0]  # Red for floor blackspots
         overlay[floor_mask & ~blackspot_mask] = overlay[floor_mask & ~blackspot_mask] * 0.8 + np.array([0, 255, 0]) * 0.2
         views['high_contrast_overlay'] = overlay
         
-        # Side by side comparison
-        views['side_by_side'] = np.hstack([image, overlay])
+        # Show what we ignored (non-floor blackspots)
+        ignored_viz = image.copy()
+        non_floor_black = all_blackspots & ~floor_mask
+        if np.any(non_floor_black):
+            ignored_viz[non_floor_black] = ignored_viz[non_floor_black] * 0.5 + np.array([128, 128, 128]) * 0.5
+        ignored_viz[blackspot_mask] = [255, 0, 0]  # Still show floor blackspots
+        views['ignored_blackspots'] = ignored_viz
         
-        # Blackspots only on white background
-        blackspot_only = np.ones_like(image) * 255
-        blackspot_only[blackspot_mask] = [0, 0, 0]  # Black spots
-        blackspot_only[floor_mask & ~blackspot_mask] = [200, 200, 200]  # Gray floor areas
-        views['blackspot_only'] = blackspot_only
-        
-        # Annotated view with labels
-        annotated = image.copy()
-        contours, _ = cv2.findContours(blackspot_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for i, contour in enumerate(contours):
-            # Draw contour
-            cv2.drawContours(annotated, [contour], -1, (255, 0, 0), 3)
-            
-            # Add size label
-            x, y, w, h = cv2.boundingRect(contour)
-            area = cv2.contourArea(contour)
-            if area > 50:  # Only label significant spots
-                label = f"Spot {i+1}: {w}×{h}px"
-                cv2.putText(annotated, label, (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(annotated, label, (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
-        
-        views['annotated_view'] = annotated
-        
-        # Floor segmentation view if available
+        # Floor types visualization
         if segmentation_mask is not None:
-            seg_view = image.copy()
-            
-            # Color different floor types
-            colors = [(255, 100, 100), (100, 255, 100), (100, 100, 255), 
-                     (255, 255, 100), (255, 100, 255), (100, 255, 255)]
+            floor_viz = image.copy()
+            colors = [(255, 200, 200), (200, 255, 200), (200, 200, 255), 
+                     (255, 255, 200), (255, 200, 255), (200, 255, 255)]
             
             for i, (class_id, class_name) in enumerate(self.floor_class_ids.items()):
-                class_mask = segmentation_mask == class_id
-                if np.any(class_mask):
+                mask = segmentation_mask == class_id
+                if np.any(mask):
                     color = colors[i % len(colors)]
-                    seg_view[class_mask] = seg_view[class_mask] * 0.6 + np.array(color) * 0.4
+                    floor_viz[mask] = floor_viz[mask] * 0.6 + np.array(color) * 0.4
             
-            # Highlight blackspots on top
-            seg_view[blackspot_mask] = [255, 0, 0]
-            views['segmentation_view'] = seg_view
-        else:
-            views['segmentation_view'] = overlay
+            floor_viz[blackspot_mask] = [255, 0, 0]
+            views['floor_types'] = floor_viz
         
         return views
