@@ -3,7 +3,6 @@
 *.pyc
 *__pycache/
 blackspot/__pycache__
-oneformer/
 *.pth
 models/
 output_floor_blackspot/
