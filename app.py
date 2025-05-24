@@ -1,21 +1,70 @@
 """
 NeuroNest: Advanced Environment Analysis for Alzheimer's Care
-Main entry point with runtime dependency installation.
+Main entry point for the application.
 """
 
-import logging
-import sys
-import warnings
+# Install critical dependencies first
 import subprocess
-import importlib
-from pathlib import Path
+import sys
 import os
+
+def ensure_dependencies():
+    """Ensure critical dependencies are installed in correct order"""
+    try:
+        import torch
+        import detectron2
+        print("✓ Core dependencies already available")
+        return True
+    except ImportError:
+        print("Installing core dependencies...")
+        try:
+            # Install torch first
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", 
+                "torch==2.0.1+cpu", "torchvision==0.15.2+cpu",
+                "--find-links", "https://download.pytorch.org/whl/cpu/torch_stable.html"
+            ])
+            
+            # Install detectron2 dependencies
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "git+https://github.com/cocodataset/panopticapi.git",
+                "git+https://github.com/mcordts/cityscapesScripts.git"
+            ])
+            
+            # Install detectron2
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "git+https://github.com/facebookresearch/detectron2.git@v0.6"
+            ])
+            
+            print("✓ Dependencies installed successfully")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to install dependencies: {e}")
+            return False
+
+# Ensure dependencies before importing main modules
+if not ensure_dependencies():
+    sys.exit(1)
+
+import logging
+import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Rest of your existing app.py code...
+project_root = Path(__file__).parent.absolute()
+sys.path = [p for p in sys.path if not p.endswith('NeuroNest')]
+sys.path.insert(0, str(project_root))
+
+# Your existing imports and code...
+
 
 def install_package(package_name, import_name=None):
     """Install a package if it's not already installed"""
