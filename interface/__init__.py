@@ -1,3 +1,3 @@
-from .gradio_ui import create_gradio_interface
+from .neuronest import NeuroNestApp
 
-__all__ = ['create_gradio_interface']
+__all__ = ['NeuroNestApp']

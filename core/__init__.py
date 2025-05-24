@@ -1,1 +1,3 @@
-from .app import NeuroNestApp
+from .neuronest import NeuroNestApp
+
+__all__ = ['NeuroNestApp']
