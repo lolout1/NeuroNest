@@ -9,3 +9,6 @@ oneformer/** filter=lfs diff=lfs merge=lfs -text
 
 # Detectron2 source code (track entire directory with LFS)
 detectron2/** filter=lfs diff=lfs merge=lfs -text
+
+# Detectron2 source code (track entire directory with LFS)
+detectron2/** filter=lfs diff=lfs merge=lfs -text
