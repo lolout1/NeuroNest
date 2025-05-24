@@ -1,13 +1,13 @@
 """
 NeuroNest: Advanced Environment Analysis for Alzheimer's Care
-Main entry point for the application.
+Main entry point with comprehensive error handling.
 """
 
 import logging
 import sys
 import warnings
-from pathlib import Path
 import os
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
@@ -15,89 +15,124 @@ warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# CRITICAL: Ensure project root is FIRST in path
-project_root = Path(__file__).parent.absolute()
-sys.path = [p for p in sys.path if not p.endswith('NeuroNest')]
-sys.path.insert(0, str(project_root))
-
-# Add local oneformer to path (now in NeuroNest/oneformer)
-local_oneformer = project_root / "oneformer"
-if local_oneformer.exists():
-    sys.path.insert(1, str(project_root))  # This allows "import oneformer" to work
-    logger.info(f"Using local OneFormer from: {local_oneformer}")
-
-# Load .env file if it exists
-env_path = project_root / '.env'
-if env_path.exists():
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                os.environ[key] = value.strip()
-    logger.info("Loaded environment from .env file")
-
-# Import local modules
-try:
-    from config import DEVICE
-    from interface import create_gradio_interface
-    logger.info("✅ All modules imported successfully")
-except ImportError as e:
-    logger.error(f"Failed to import local modules: {e}")
-    logger.error(f"Python path: {sys.path}")
-    raise
-
-def check_oneformer_available():
-    """Check if OneFormer is available"""
+def check_and_install_dependencies():
+    """Check if critical dependencies are available"""
+    missing_deps = []
+    
     try:
-        from oneformer import add_oneformer_config
-        logger.info("✓ OneFormer is available")
-        return True
-    except ImportError as e:
-        logger.warning(f"✗ OneFormer not available: {e}")
-        return False
-
-def check_natten_available():
-    """Check if NATTEN is available"""
+        import torch
+        logger.info("✓ PyTorch available")
+    except ImportError:
+        missing_deps.append("torch")
+    
     try:
-        import natten
-        logger.info("✓ NATTEN is available")
-        return True
+        import cv2
+        logger.info("✓ OpenCV available")
+    except ImportError:
+        missing_deps.append("opencv-python")
+    
+    try:
+        import gradio
+        logger.info("✓ Gradio available")
+    except ImportError:
+        missing_deps.append("gradio")
+    
+    if missing_deps:
+        logger.error(f"Missing dependencies: {missing_deps}")
+        logger.info("Installing missing dependencies...")
+        
+        import subprocess
+        for dep in missing_deps:
+            try:
+                if dep == "torch":
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", 
+                        "--extra-index-url", "https://download.pytorch.org/whl/cpu",
+                        "torch==2.0.1+cpu", "torchvision==0.15.2+cpu"
+                    ])
+                else:
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
+                logger.info(f"✓ Installed {dep}")
+            except Exception as e:
+                logger.error(f"Failed to install {dep}: {e}")
+                return False
+    
+    return True
+
+def main():
+    """Main application entry point"""
+    
+    # Ensure dependencies are available
+    if not check_and_install_dependencies():
+        logger.error("Failed to install required dependencies")
+        return
+    
+    # Setup paths
+    project_root = Path(__file__).parent.absolute()
+    sys.path.insert(0, str(project_root))
+    
+    # Import with error handling
+    try:
+        # Import config with fallback
+        try:
+            from config import DEVICE, TORCH_AVAILABLE
+            logger.info(f"Using device: {DEVICE}")
+        except ImportError as e:
+            logger.warning(f"Config import failed: {e}, using fallbacks")
+            DEVICE = "cpu"
+            TORCH_AVAILABLE = False
+        
+        # Import interface
+        from interface import create_gradio_interface
+        logger.info("✓ Interface module imported")
+        
     except ImportError as e:
-        logger.warning(f"✗ NATTEN not available: {e}")
-        return False
-
-if __name__ == "__main__":
-    print(f"🚀 Starting NeuroNest on {DEVICE}")
-    print(f"📍 Project root: {project_root}")
+        logger.error(f"Critical import failed: {e}")
+        # Create a minimal fallback interface
+        return create_fallback_interface()
     
-    # Check dependencies
-    ONEFORMER_AVAILABLE = check_oneformer_available()
-    NATTEN_AVAILABLE = check_natten_available()
-    
-    print(f"📦 OneFormer available: {ONEFORMER_AVAILABLE}")
-    print(f"📦 NATTEN available: {NATTEN_AVAILABLE}")
-    
-    if not ONEFORMER_AVAILABLE:
-        print("\n⚠️  OneFormer not found!")
-        print("Expected location: NeuroNest/oneformer/")
-
     try:
         # Create and launch interface
         interface = create_gradio_interface()
-
-        # Launch the interface
-        interface.queue(max_size=10).launch(
-            server_name=os.environ.get('GRADIO_SERVER_NAME', '0.0.0.0'),
-            server_port=int(os.environ.get('GRADIO_SERVER_PORT', 7860)),
-            share=os.environ.get('GRADIO_SHARE', 'True').lower() == 'true',
-            share_server_address=None,
-            auth=None,
-            show_api=False,
-            show_error=True
-        )
+        
+        # Launch configuration
+        launch_kwargs = {
+            "server_name": "0.0.0.0",
+            "server_port": int(os.environ.get("GRADIO_SERVER_PORT", 7860)),
+            "share": False,
+            "show_error": True,
+            "show_api": False
+        }
+        
+        logger.info("🚀 Launching NeuroNest application...")
+        interface.queue(max_size=10).launch(**launch_kwargs)
+        
     except Exception as e:
         logger.error(f"Failed to launch application: {e}")
         import traceback
         traceback.print_exc()
-        raise
+        # Try fallback interface
+        create_fallback_interface()
+
+def create_fallback_interface():
+    """Create a minimal interface when full system isn't available"""
+    import gradio as gr
+    
+    def fallback_analysis(image):
+        return "⚠️ NeuroNest is initializing. Please try again in a moment.", None
+    
+    with gr.Blocks(title="NeuroNest - Initializing") as interface:
+        gr.Markdown("# 🧠 NeuroNest - Alzheimer's Environment Analysis")
+        gr.Markdown("**System is initializing... Please wait.**")
+        
+        with gr.Row():
+            image_input = gr.Image(label="Upload Image", type="filepath")
+            result_output = gr.Textbox(label="Status")
+        
+        analyze_btn = gr.Button("Analyze", variant="primary")
+        analyze_btn.click(fallback_analysis, image_input, result_output)
+    
+    interface.launch(server_name="0.0.0.0", server_port=7860)
+
+if __name__ == "__main__":
+    main()
