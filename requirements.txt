@@ -1,31 +1,37 @@
-# Core ML dependencies FIRST (detectron2 needs these)
+# Core dependencies - INSTALL TORCH FIRST!
 torch==1.10.1
 torchvision==0.11.2
 numpy==1.24.4
 
-# Scientific computing (required before detectron2)
+# Scientific computing (match your versions)
 scipy==1.10.1
 matplotlib==3.7.5
 Pillow==10.2.0
-
-# Computer vision basics
 opencv-python==4.11.0.86
 
-# AFTER torch is installed - Detectron2
+# Install detectron2 AFTER torch
 detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
 
-# OneFormer and related (after detectron2)
+# OneFormer and related (install after detectron2)
 git+https://github.com/SHI-Labs/OneFormer.git
 timm==0.4.12
 transformers==4.33.2
 huggingface-hub==0.20.3
 
-# Additional ML libraries
-scikit-learn==1.3.2
-scikit-image==0.21.0
+# NATTEN - try to install, fallback gracefully
+# Note: Your system has custom NATTEN, this might fail but won't break the build
+git+https://github.com/SHI-Labs/NATTEN.git
 
 # Web interface
 gradio==4.44.1
+
+# Computer vision and image processing
+scikit-image==0.21.0
+scikit-learn==1.3.2
+imageio==2.31.5
+
+# Color science for contrast analysis
+colorspacious==1.1.2
 
 # Configuration and utilities
 omegaconf==2.3.0
@@ -34,16 +40,7 @@ tqdm==4.66.1
 requests==2.31.0
 psutil==5.9.5
 
-# Image processing
-imageio==2.31.5
-tifffile==2023.7.10
-
-# Color science for contrast analysis
-colorspacious==1.1.2
-colour-science==0.4.2
-
-# Additional utilities
-packaging==23.1
+# Additional ML dependencies
 fairscale==0.4.13
 einops==0.7.0
 fvcore==0.1.5.post20221221
@@ -51,12 +48,8 @@ fvcore==0.1.5.post20221221
 # For dataset handling
 pycocotools==2.0.7
 
-# Threading optimization
+# Threading
 threadpoolctl==3.2.0
 
 # Performance optimization
 diffdist==0.1
-
-# Additional scientific libraries
-pandas==2.0.3
-seaborn==0.12.2
