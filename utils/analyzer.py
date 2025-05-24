@@ -3,6 +3,11 @@
 import numpy as np
 import cv2
 from typing import Dict, List, Tuple, Optional, Set
+from scipy import ndimage
+from scipy.spatial.distance import euclidean
+from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+import colorsys
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,7 +18,6 @@ class RobustContrastAnalyzer:
 
     def __init__(self, wcag_threshold: float = 4.5, alzheimer_threshold: float = 7.0, 
                  color_similarity_threshold: float = 30.0, perceptual_threshold: float = 0.15):
-        """Initialize the contrast analyzer with all required parameters"""
         # Contrast thresholds
         self.wcag_threshold = wcag_threshold
         self.alzheimer_threshold = alzheimer_threshold
@@ -89,7 +93,7 @@ class RobustContrastAnalyzer:
         """Calculate comprehensive color similarity using multiple methods"""
         
         # 1. Euclidean distance in RGB space
-        rgb_distance = np.linalg.norm(color1 - color2)
+        rgb_distance = euclidean(color1, color2)
         rgb_similarity = max(0, 1 - (rgb_distance / 441.67))  # 441.67 = sqrt(255^2 * 3)
         
         # 2. HSV component analysis
