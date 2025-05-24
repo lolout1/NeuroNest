@@ -23,15 +23,15 @@ class NeuroNestApp:
         self.blackspot_detector = None
         self.use_high_res = False
         
-        # Initialize contrast analyzer with proper parameters
+        # Initialize contrast analyzer with ultra-sensitive parameters
         try:
             self.contrast_analyzer = RobustContrastAnalyzer(
                 wcag_threshold=4.5,
                 alzheimer_threshold=7.0,
-                color_similarity_threshold=25.0,  # Very sensitive
-                perceptual_threshold=0.12         # Very sensitive
+                color_similarity_threshold=25.0,  # Very sensitive to similar colors
+                perceptual_threshold=0.12         # Very sensitive to perceptual similarity
             )
-            logger.info("Contrast analyzer initialized successfully")
+            logger.info("Contrast analyzer initialized with ultra-sensitive settings")
         except Exception as e:
             logger.error(f"Failed to initialize contrast analyzer: {e}")
             # Create a fallback analyzer with minimal parameters
@@ -130,24 +130,11 @@ class NeuroNestApp:
             if enable_blackspot:
                 logger.info("Running enhanced blackspot detection (floors only)...")
                 try:
-                    # Resize floor_prior to match original image dimensions if needed
-                    h_orig, w_orig = image_rgb.shape[:2]
-                    h_seg, w_seg = seg_mask.shape
-                    
-                    if (h_orig, w_orig) != (h_seg, w_seg):
-                        # Resize floor prior back to original image size
-                        floor_prior_original = cv2.resize(
-                            floor_prior.astype(np.uint8),
-                            (w_orig, h_orig),
-                            interpolation=cv2.INTER_NEAREST
-                        ).astype(bool)
-                    else:
-                        floor_prior_original = floor_prior
-                    
+                    # Blackspot detector works on original image resolution
                     if self.blackspot_detector is not None:
                         # Use trained model + color-based detection
                         blackspot_results = self.blackspot_detector.detect_blackspots(
-                            image_rgb, floor_prior_original
+                            image_rgb, floor_prior
                         )
                         logger.info(f"Model-based blackspot detection completed - found {blackspot_results.get('num_detections', 0)} blackspots")
                     else:
@@ -155,7 +142,7 @@ class NeuroNestApp:
                         logger.info("Using color-based blackspot detection (model not available)")
                         dummy_detector = BlackspotDetector("")  # No model path
                         blackspot_results = dummy_detector.detect_blackspots(
-                            image_rgb, floor_prior_original
+                            image_rgb, floor_prior
                         )
                         logger.info(f"Color-based blackspot detection completed - found {blackspot_results.get('num_detections', 0)} blackspots")
                     
@@ -167,58 +154,24 @@ class NeuroNestApp:
                     traceback.print_exc()
                     results['blackspot'] = None
 
-            # 3. Ultra-Comprehensive Contrast Analysis (Adjacent objects only)
+            # 3. Ultra-Comprehensive Contrast Analysis (ALL object pairs, not just adjacent)
             if enable_contrast:
-                logger.info("Running ultra-comprehensive contrast analysis (adjacent objects only)...")
+                logger.info("Running ultra-comprehensive contrast analysis (ALL object pairs)...")
                 try:
-                    # Update analyzer thresholds safely
-                    if hasattr(self.contrast_analyzer, 'wcag_threshold'):
-                        self.contrast_analyzer.wcag_threshold = min(contrast_threshold, 4.5)  # Don't go below WCAG
-                    if hasattr(self.contrast_analyzer, 'alzheimer_threshold'):
-                        self.contrast_analyzer.alzheimer_threshold = contrast_threshold
+                    # Update analyzer thresholds
+                    self.contrast_analyzer.wcag_threshold = min(contrast_threshold, 4.5)  # Don't go below WCAG
+                    self.contrast_analyzer.alzheimer_threshold = contrast_threshold
 
-                    # Get the appropriate resolution config
-                    config = ONEFORMER_CONFIG["ADE20K"]
-                    if self.use_high_res:
-                        target_width = config.get("high_res_width", 1280)
-                        target_height = config.get("high_res_height", 1280)
-                    else:
-                        target_width = config["width"]
-                        target_height = config.get("height", config["width"])
-
-                    # Use the resized image for contrast analysis to match segmentation
-                    h, w = image_rgb.shape[:2]
-                    if w != target_width or h != target_height:
-                        scale = min(target_width / w, target_height / h)
-                        new_w = int(w * scale)
-                        new_h = int(h * scale)
-                        image_for_contrast = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-                        
-                        # Pad if needed
-                        if new_w < target_width or new_h < target_height:
-                            pad_w = target_width - new_w
-                            pad_h = target_height - new_h
-                            pad_left = pad_w // 2
-                            pad_top = pad_h // 2
-                            image_for_contrast = cv2.copyMakeBorder(
-                                image_for_contrast,
-                                pad_top, pad_h - pad_top,
-                                pad_left, pad_w - pad_left,
-                                cv2.BORDER_CONSTANT,
-                                value=[0, 0, 0]
-                            )
-                        logger.info(f"Resized image for contrast analysis: {image_for_contrast.shape}")
-                    else:
-                        image_for_contrast = image_rgb
-
-                    # Run the enhanced analysis
-                    contrast_results = self.contrast_analyzer.analyze_contrast(image_for_contrast, seg_mask)
+                    # Run the enhanced analysis on original resolution image
+                    contrast_results = self.contrast_analyzer.analyze_contrast(image_rgb, seg_mask)
                     
                     total_issues = contrast_results['statistics']['total_issues']
                     critical_issues = contrast_results['statistics']['critical_count']
+                    similar_pairs = contrast_results['statistics']['similar_color_pairs']
                     good_contrasts = contrast_results['statistics']['good_contrast_count']
                     
-                    logger.info(f"Contrast analysis completed - {total_issues} issues ({critical_issues} critical), {good_contrasts} good contrasts")
+                    logger.info(f"Contrast analysis completed - {total_issues} issues ({critical_issues} critical), "
+                               f"{similar_pairs} similar color pairs, {good_contrasts} good contrasts")
                     
                     results['contrast'] = contrast_results
 
@@ -252,7 +205,7 @@ class NeuroNestApp:
                 stats['segmentation'] = {
                     'num_classes': len(unique_classes),
                     'image_size': results['segmentation']['mask'].shape,
-                    'resolution_mode': 'high' if self.use_high_res else 'standard'
+                    'resolution_mode': 'high (1280x1280)' if self.use_high_res else 'standard (640x640)'
                 }
             except Exception as e:
                 logger.warning(f"Error generating segmentation stats: {e}")
@@ -285,21 +238,23 @@ class NeuroNestApp:
                 # Add risk assessment
                 critical_count = cs.get('critical_count', 0)
                 total_issues = cs.get('total_issues', 0)
+                similar_pairs = cs.get('similar_color_pairs', 0)
                 
+                # Enhanced risk assessment including similar colors
                 if critical_count > 0:
                     risk_level = 'critical'
-                elif total_issues > 15:
+                elif total_issues > 15 or similar_pairs > 10:
                     risk_level = 'high'
-                elif total_issues > 8:
+                elif total_issues > 8 or similar_pairs > 5:
                     risk_level = 'medium'
-                elif total_issues > 3:
+                elif total_issues > 3 or similar_pairs > 2:
                     risk_level = 'low'
                 else:
                     risk_level = 'excellent'
                 
                 stats['contrast']['risk_level'] = risk_level
-                stats['contrast']['risk_score'] = critical_count * 3 + total_issues
-                stats['contrast']['adjacency_based'] = True  # Confirm we only check adjacent objects
+                stats['contrast']['risk_score'] = critical_count * 3 + total_issues + similar_pairs
+                stats['contrast']['checks_all_objects'] = True  # Confirm we check ALL objects
                 
             except Exception as e:
                 logger.warning(f"Error generating contrast stats: {e}")

@@ -1,8 +1,10 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0
-export CUDA_LAUNCH_BLOCKING=1
-export PYTHONUNBUFFERED=1
+# Source .env file if it exists
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+    echo "✓ Loaded environment from .env"
+fi
 
 # Check GPU availability
 echo "Checking GPU availability..."

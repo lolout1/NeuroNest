@@ -7,21 +7,17 @@ FLOOR_CLASSES = {
     'mat': [78],          # mat
 }
 
-# OneFormer configurations with multiple resolution options
+# OneFormer configurations
 ONEFORMER_CONFIG = {
     "ADE20K": {
         "key": "ade20k",
         "swin_cfg": "configs/ade20k/oneformer_swin_large_IN21k_384_bs16_160k.yaml",
         "swin_model": "shi-labs/oneformer_ade20k_swin_large",
         "swin_file": "250_16_swin_l_oneformer_ade20k_160k.pth",
-        "width": 896,  # Increased from 640 to 896 for better accuracy
-        "height": 896,  # Add height for consistency
-        "high_res_width": 1280,  # Optional ultra-high resolution
-        "high_res_height": 1280
     }
 }
 
-# ADE20K class names for visualization
+# Simple class names for display (when needed)
 ADE20K_CLASS_NAMES = {
     0: 'wall', 1: 'building', 2: 'sky', 3: 'floor', 4: 'tree',
     5: 'ceiling', 6: 'road', 7: 'bed', 8: 'window', 9: 'grass',

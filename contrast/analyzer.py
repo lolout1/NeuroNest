@@ -1,10 +1,10 @@
-"""Enhanced contrast analysis for Alzheimer's-friendly environments with robust adjacency detection."""
+"""Ultra-robust contrast analysis for Alzheimer's-friendly environments with complete color similarity detection."""
 
 import numpy as np
 import cv2
 from typing import Dict, List, Tuple, Optional, Set
 from scipy import ndimage
-from scipy.spatial.distance import euclidean
+from scipy.spatial.distance import euclidean, cosine
 from sklearn.cluster import DBSCAN
 from sklearn.metrics.pairwise import cosine_similarity
 import colorsys
@@ -14,21 +14,20 @@ logger = logging.getLogger(__name__)
 
 
 class RobustContrastAnalyzer:
-    """Ultra-comprehensive contrast analyzer with robust adjacency detection for Alzheimer's environments"""
-
+    """Ultra-comprehensive contrast analyzer that detects ANY similar colors in Alzheimer's environments"""
+    
     def __init__(self, wcag_threshold: float = 4.5, alzheimer_threshold: float = 7.0, 
                  color_similarity_threshold: float = 30.0, perceptual_threshold: float = 0.15):
-        """Initialize the contrast analyzer with all required parameters"""
         # Contrast thresholds
         self.wcag_threshold = wcag_threshold
         self.alzheimer_threshold = alzheimer_threshold
         
         # Color similarity thresholds
-        self.color_similarity_threshold = color_similarity_threshold
-        self.perceptual_threshold = perceptual_threshold
-        self.hue_similarity_threshold = 15.0
-        self.saturation_similarity_threshold = 0.2
-        self.value_similarity_threshold = 0.2
+        self.color_similarity_threshold = color_similarity_threshold  # Euclidean distance in RGB space
+        self.perceptual_threshold = perceptual_threshold  # Perceptual similarity threshold (0-1)
+        self.hue_similarity_threshold = 15.0  # Degrees for hue similarity
+        self.saturation_similarity_threshold = 0.2  # Saturation similarity (0-1)
+        self.value_similarity_threshold = 0.2  # Value/brightness similarity (0-1)
         
         # ADE20K class mappings for ALL indoor objects
         self.semantic_classes = {
@@ -68,7 +67,7 @@ class RobustContrastAnalyzer:
             'microwave': [124],               # microwave
         }
         
-        # Critical safety relationships
+        # Critical safety relationships (these MUST have good contrast)
         self.critical_safety_pairs = {
             ('floor', 'stairs'), ('stairs', 'floor'),
             ('floor', 'door'), ('door', 'floor'),
@@ -92,22 +91,37 @@ class RobustContrastAnalyzer:
             ('wall', 'mirror'), ('mirror', 'wall'),
             ('wall', 'picture'), ('picture', 'wall'),
         }
-
+    
     def get_object_category(self, class_id: int) -> Optional[str]:
         """Map segmentation class to object category"""
         for category, class_ids in self.semantic_classes.items():
             if class_id in class_ids:
                 return category
         return None
-
+    
+    def rgb_to_lab(self, rgb: np.ndarray) -> np.ndarray:
+        """Convert RGB to LAB color space for perceptual color differences"""
+        # Normalize RGB to 0-1
+        rgb_norm = rgb.astype(np.float32) / 255.0
+        
+        # Convert to LAB using OpenCV
+        lab = cv2.cvtColor(rgb_norm.reshape(1, 1, 3), cv2.COLOR_RGB2LAB)[0, 0]
+        return lab
+    
     def calculate_color_similarity_score(self, color1: np.ndarray, color2: np.ndarray) -> Dict[str, float]:
         """Calculate comprehensive color similarity using multiple methods"""
         
         # 1. Euclidean distance in RGB space
-        rgb_distance = np.linalg.norm(color1 - color2)
+        rgb_distance = euclidean(color1, color2)
         rgb_similarity = max(0, 1 - (rgb_distance / 441.67))  # 441.67 = sqrt(255^2 * 3)
         
-        # 2. HSV component analysis
+        # 2. Perceptual distance in LAB space
+        lab1 = self.rgb_to_lab(color1)
+        lab2 = self.rgb_to_lab(color2)
+        lab_distance = euclidean(lab1, lab2)
+        perceptual_similarity = max(0, 1 - (lab_distance / 100))  # Normalize LAB distance
+        
+        # 3. HSV component analysis
         hsv1 = cv2.cvtColor(np.uint8([[color1]]), cv2.COLOR_RGB2HSV)[0][0].astype(float)
         hsv2 = cv2.cvtColor(np.uint8([[color2]]), cv2.COLOR_RGB2HSV)[0][0].astype(float)
         
@@ -120,30 +134,31 @@ class RobustContrastAnalyzer:
         sat_similarity = 1 - abs(hsv1[1] - hsv2[1]) / 255
         val_similarity = 1 - abs(hsv1[2] - hsv2[2]) / 255
         
-        # 3. LAB color space distance (more perceptually uniform)
-        lab1 = cv2.cvtColor(np.uint8([[color1]]), cv2.COLOR_RGB2LAB)[0][0]
-        lab2 = cv2.cvtColor(np.uint8([[color2]]), cv2.COLOR_RGB2LAB)[0][0]
-        lab_distance = np.linalg.norm(lab1 - lab2)
+        # 4. Cosine similarity of RGB vectors
+        cosine_sim = cosine_similarity([color1], [color2])[0][0]
         
-        # 4. Combined similarity score
+        # 5. Combined similarity score
         combined_similarity = (
-            rgb_similarity * 0.3 +
-            hue_similarity * 0.3 +
-            sat_similarity * 0.2 +
-            val_similarity * 0.2
+            rgb_similarity * 0.25 +
+            perceptual_similarity * 0.35 +
+            hue_similarity * 0.20 +
+            sat_similarity * 0.10 +
+            val_similarity * 0.10
         )
         
         return {
             'rgb_distance': rgb_distance,
             'rgb_similarity': rgb_similarity,
+            'perceptual_similarity': perceptual_similarity,
             'hue_similarity': hue_similarity,
             'saturation_similarity': sat_similarity,
             'value_similarity': val_similarity,
+            'cosine_similarity': cosine_sim,
             'combined_similarity': combined_similarity,
             'hue_difference_degrees': hue_diff,
             'lab_distance': lab_distance
         }
-
+    
     def calculate_wcag_contrast(self, color1: np.ndarray, color2: np.ndarray) -> float:
         """Calculate WCAG contrast ratio"""
         def relative_luminance(rgb):
@@ -160,7 +175,7 @@ class RobustContrastAnalyzer:
         darker = min(lum1, lum2)
 
         return (lighter + 0.05) / (darker + 0.05)
-
+    
     def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray, 
                               use_clustering: bool = True) -> np.ndarray:
         """Extract dominant color from masked region with optional clustering"""
@@ -193,7 +208,7 @@ class RobustContrastAnalyzer:
 
         # Fallback to median
         return np.median(masked_pixels, axis=0).astype(int)
-
+    
     def find_adjacent_segments(self, seg1_mask: np.ndarray, seg2_mask: np.ndarray,
                              min_boundary_length: int = 30) -> np.ndarray:
         """Find clean boundaries between segments with robust adjacency detection"""
@@ -242,9 +257,9 @@ class RobustContrastAnalyzer:
                     cv2.fillPoly(clean_boundary, [contour], 1)
 
         return clean_boundary.astype(bool)
-
+    
     def analyze_contrast(self, image: np.ndarray, segmentation: np.ndarray) -> Dict:
-        """Perform comprehensive contrast analysis between adjacent objects only"""
+        """Perform comprehensive contrast analysis detecting ALL similar colors (not just adjacent)"""
         h, w = segmentation.shape
         
         # Initialize results with ALL required keys
@@ -256,7 +271,8 @@ class RobustContrastAnalyzer:
             'good_contrasts': [],
             'visualization': image.copy(),
             'statistics': {},
-            'detailed_analysis': []
+            'detailed_analysis': [],
+            'similar_color_pairs': []
         }
         
         # Build segment information
@@ -293,10 +309,11 @@ class RobustContrastAnalyzer:
             
         logger.info(f"Analyzing {len(segment_info)} segments for contrast")
         
-        # Analyze pairs - ONLY ADJACENT OBJECTS
+        # Analyze ALL pairs for similar colors (not just adjacent)
         total_pairs_checked = 0
         adjacent_pairs = 0
         issue_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        similar_color_count = 0
         
         segment_ids = list(segment_info.keys())
         
@@ -307,16 +324,13 @@ class RobustContrastAnalyzer:
                 info1 = segment_info[seg_id1]
                 info2 = segment_info[seg_id2]
                 
-                # Check if segments are adjacent - THIS IS CRITICAL
+                total_pairs_checked += 1
+                
+                # Check if segments are adjacent
                 boundary = self.find_adjacent_segments(info1['mask'], info2['mask'])
                 is_adjacent = np.any(boundary)
-                
-                if not is_adjacent:
-                    # Skip non-adjacent pairs
-                    continue
-                
-                adjacent_pairs += 1
-                total_pairs_checked += 1
+                if is_adjacent:
+                    adjacent_pairs += 1
                 
                 # Calculate contrast and similarity
                 wcag_contrast = self.calculate_wcag_contrast(info1['color'], info2['color'])
@@ -326,6 +340,30 @@ class RobustContrastAnalyzer:
                 issues = []
                 severity = None
                 
+                # Check for similar colors regardless of adjacency
+                is_similar = False
+                
+                # Ultra-sensitive color similarity detection
+                if similarity['rgb_distance'] < self.color_similarity_threshold:
+                    issues.append(f"Very similar RGB values (distance: {similarity['rgb_distance']:.1f})")
+                    is_similar = True
+                    severity = 'critical'
+                
+                if similarity['combined_similarity'] > (1 - self.perceptual_threshold):
+                    issues.append(f"Perceptually very similar ({similarity['combined_similarity']:.3f})")
+                    is_similar = True
+                    severity = 'critical'
+                
+                if similarity['hue_difference_degrees'] < self.hue_similarity_threshold and similarity['saturation_similarity'] > 0.7:
+                    issues.append(f"Similar hues ({similarity['hue_difference_degrees']:.1f}° apart)")
+                    is_similar = True
+                    severity = 'high' if severity != 'critical' else severity
+                
+                if similarity['lab_distance'] < 20:
+                    issues.append(f"Perceptually similar (LAB distance: {similarity['lab_distance']:.1f})")
+                    is_similar = True
+                    severity = 'high' if severity != 'critical' else severity
+                
                 # WCAG contrast check
                 if wcag_contrast < self.alzheimer_threshold:
                     if wcag_contrast < self.wcag_threshold:
@@ -333,25 +371,17 @@ class RobustContrastAnalyzer:
                         severity = 'critical'
                     else:
                         issues.append(f"Low contrast for Alzheimer's: {wcag_contrast:.1f}:1")
-                        severity = 'high'
+                        severity = 'high' if severity != 'critical' else severity
                 
-                # Color similarity check
-                if similarity['combined_similarity'] > (1 - self.perceptual_threshold):
-                    issues.append(f"Colors too similar (similarity: {similarity['combined_similarity']:.3f})")
-                    severity = 'critical'
-                elif similarity['rgb_distance'] < self.color_similarity_threshold:
-                    issues.append(f"RGB colors too close (distance: {similarity['rgb_distance']:.1f})")
-                    severity = 'high' if severity != 'critical' else severity
-                
-                # Hue similarity check
-                if similarity['hue_difference_degrees'] < self.hue_similarity_threshold:
-                    issues.append(f"Similar hues: {similarity['hue_difference_degrees']:.1f}° apart")
-                    severity = 'high' if severity is None else severity
-                
-                # LAB distance check (perceptual uniformity)
-                if similarity['lab_distance'] < 20:
-                    issues.append(f"Perceptually similar (LAB distance: {similarity['lab_distance']:.1f})")
-                    severity = 'high' if severity is None else severity
+                # Track similar colors
+                if is_similar:
+                    similar_color_count += 1
+                    results['similar_color_pairs'].append({
+                        'categories': (info1['category'], info2['category']),
+                        'colors': (info1['color'].tolist(), info2['color'].tolist()),
+                        'similarity_metrics': similarity,
+                        'is_adjacent': is_adjacent
+                    })
                 
                 # Determine final severity based on relationship
                 cat1, cat2 = info1['category'], info2['category']
@@ -372,30 +402,39 @@ class RobustContrastAnalyzer:
                     issue = {
                         'categories': (cat1, cat2),
                         'contrast_ratio': wcag_contrast,
-                        'boundary_area': np.sum(boundary),
-                        'boundary_length': len(np.where(boundary)[0]),
+                        'boundary_area': np.sum(boundary) if is_adjacent else 0,
+                        'boundary_length': len(np.where(boundary)[0]) if is_adjacent else 0,
                         'description': description,
                         'priority': severity,
                         'issues': issues,
                         'color1': info1['color'].tolist(),
-                        'color2': info2['color'].tolist()
+                        'color2': info2['color'].tolist(),
+                        'is_adjacent': is_adjacent,
+                        'similarity_score': similarity['combined_similarity']
                     }
                     
-                    # Visualize on boundary
+                    # Visualize on boundary if adjacent
+                    if is_adjacent and np.any(boundary):
+                        if severity == 'critical':
+                            results['visualization'][boundary] = [255, 0, 0]  # Red
+                        elif severity == 'high':
+                            results['visualization'][boundary] = [255, 165, 0]  # Orange
+                        elif severity == 'medium':
+                            results['visualization'][boundary] = [255, 255, 0]  # Yellow
+                        else:
+                            results['visualization'][boundary] = [255, 255, 128]  # Light yellow
+                    
+                    # Add to appropriate issue list
                     if severity == 'critical':
-                        results['visualization'][boundary] = [255, 0, 0]  # Red
                         results['critical_issues'].append(issue)
                         issue_counts['critical'] += 1
                     elif severity == 'high':
-                        results['visualization'][boundary] = [255, 165, 0]  # Orange
                         results['high_issues'].append(issue)
                         issue_counts['high'] += 1
                     elif severity == 'medium':
-                        results['visualization'][boundary] = [255, 255, 0]  # Yellow
                         results['medium_issues'].append(issue)
                         issue_counts['medium'] += 1
                     else:
-                        results['visualization'][boundary] = [255, 255, 128]  # Light yellow
                         results['low_issues'].append(issue)
                         issue_counts['low'] += 1
                 else:
@@ -406,7 +445,8 @@ class RobustContrastAnalyzer:
                             'contrast_ratio': wcag_contrast,
                             'hue_difference': similarity['hue_difference_degrees'],
                             'color1': info1['color'].tolist(),
-                            'color2': info2['color'].tolist()
+                            'color2': info2['color'].tolist(),
+                            'is_adjacent': is_adjacent
                         })
                 
                 # Add to detailed analysis
@@ -414,8 +454,8 @@ class RobustContrastAnalyzer:
                     'categories': (cat1, cat2),
                     'wcag_contrast': wcag_contrast,
                     'similarity_metrics': similarity,
-                    'is_adjacent': True,  # We only analyze adjacent pairs
-                    'boundary_pixels': np.sum(boundary),
+                    'is_adjacent': is_adjacent,
+                    'boundary_pixels': np.sum(boundary) if is_adjacent else 0,
                     'severity': severity,
                     'issues': issues
                 })
@@ -431,13 +471,16 @@ class RobustContrastAnalyzer:
             'medium_count': issue_counts['medium'],
             'low_count': issue_counts['low'],
             'good_contrast_count': len(results['good_contrasts']),
+            'similar_color_pairs': similar_color_count,
             'wcag_threshold': self.wcag_threshold,
             'alzheimer_threshold': self.alzheimer_threshold,
-            'adjacency_only': True  # Confirm we only check adjacent objects
+            'detection_sensitivity': 'ultra_high',
+            'checks_all_pairs': True  # We check ALL pairs, not just adjacent
         }
         
-        logger.info(f"Contrast analysis complete: {adjacent_pairs} adjacent pairs analyzed, "
+        logger.info(f"Contrast analysis complete: {total_pairs_checked} pairs analyzed, "
                    f"{sum(issue_counts.values())} issues found, "
+                   f"{similar_color_count} similar color pairs, "
                    f"{len(results['good_contrasts'])} good contrasts")
         
         return results
