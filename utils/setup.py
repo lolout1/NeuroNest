@@ -12,44 +12,6 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 
-def setup_python_paths():
-    """Setup Python paths for detectron2 and oneformer integration"""
-    project_root = Path(__file__).parent.parent.absolute()
-    
-    # Clean existing paths
-    sys.path = [p for p in sys.path if not any(x in p.lower() for x in ['oneformer', 'neuronest'])]
-    
-    # Add project root FIRST
-    sys.path.insert(0, str(project_root))
-    
-    # Add detectron2 explicitly if it exists
-    detectron2_path = project_root / "detectron2"
-    if detectron2_path.exists():
-        sys.path.insert(1, str(detectron2_path))
-        logger.info(f"✅ Local detectron2 path added: {detectron2_path}")
-    
-    # Add oneformer
-    oneformer_path = project_root / "oneformer"
-    if oneformer_path.exists():
-        sys.path.append(str(oneformer_path))
-    
-    logger.info(f"✅ Python paths configured: {len(sys.path)} entries")
-    return project_root
-
-
-def setup_logging(level=logging.INFO):
-    """Configure comprehensive logging"""
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('neuronest.log', mode='a')
-        ]
-    )
-    return logging.getLogger(__name__)
-
-
 def check_detectron2_comprehensive():
     """Comprehensive detectron2 health check"""
     logger.info("🔍 Checking detectron2 availability...")
@@ -135,6 +97,13 @@ def validate_environment():
         logger.info("✅ Gradio available")
     except ImportError:
         issues.append("Gradio not installed")
+    
+    # Check for detectron2
+    try:
+        import detectron2
+        logger.info("✅ Detectron2 available")
+    except ImportError:
+        logger.warning("⚠️ Detectron2 not available - some features may be limited")
     
     # Check model files
     model_paths = [
