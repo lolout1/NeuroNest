@@ -1,13 +1,3 @@
-#!/usr/bin/env bash
-# ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-# ------------------------------------------------------------------------------------------------
-# Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
-# ------------------------------------------------------------------------------------------------
-
-# Copyright (c) Facebook, Inc. and its affiliates.
-# Modified by Bowen Cheng from https://github.com/fundamentalvision/Deformable-DETR
-
-FORCE_CUDA=1 python setup.py build install
+version https://git-lfs.github.com/spec/v1
+oid sha256:8d78f573ea9375d0393610774bd98c462c47821109c0214ee94a7007e7dea69d
+size 742

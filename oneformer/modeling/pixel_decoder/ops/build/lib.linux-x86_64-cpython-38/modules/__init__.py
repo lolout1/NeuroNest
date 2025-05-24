@@ -1,12 +1,3 @@
-# ------------------------------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-# ------------------------------------------------------------------------------------------------
-# Modified from https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
-# ------------------------------------------------------------------------------------------------
-
-# Copyright (c) Facebook, Inc. and its affiliates.
-# Modified by Bowen Cheng from https://github.com/fundamentalvision/Deformable-DETR
-
-from .ms_deform_attn import MSDeformAttn
+version https://git-lfs.github.com/spec/v1
+oid sha256:b72cb718272847a052ec5e8caae1095718438fe2e09b94e9b3acff7b3da7d3f0
+size 720

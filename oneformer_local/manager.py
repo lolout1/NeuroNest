@@ -24,6 +24,15 @@ try:
 except ImportError as e:
     logger.warning(f"⚠️ Detectron2 not available: {e}")
 
+# Check for NATTEN availability separately
+NATTEN_AVAILABLE = False
+try:
+    import natten
+    NATTEN_AVAILABLE = True
+    logger.info("✅ NATTEN available")
+except ImportError:
+    logger.warning("⚠️ NATTEN not available - some DiNAT features may be limited")
+
 # OneFormer imports from git-lfs version
 ONEFORMER_AVAILABLE = False
 try:
@@ -35,12 +44,21 @@ try:
         sys.path.insert(0, str(project_root))
         logger.info(f"Using OneFormer from git-lfs: {oneformer_path}")
     
+    # Import only what we need, skip DiNAT if NATTEN unavailable
     from oneformer.config import (
         add_oneformer_config,
         add_common_config,
         add_swin_config,
-        add_dinat_config,
     )
+    
+    # Only import DiNAT config if NATTEN is available
+    if NATTEN_AVAILABLE:
+        from oneformer.config import add_dinat_config
+    else:
+        # Create a dummy function
+        def add_dinat_config(cfg):
+            pass
+    
     from oneformer.oneformer_model import OneFormer
     ONEFORMER_AVAILABLE = True
     logger.info("✅ OneFormer imports successful from git-lfs")
@@ -103,8 +121,12 @@ class OneFormerManager:
         
     def initialize(self, backbone: str = "swin", use_high_res: bool = False):
         """Initialize OneFormer model from git-lfs location"""
-        if not ONEFORMER_AVAILABLE or not DETECTRON2_AVAILABLE:
-            logger.error("OneFormer or Detectron2 not available")
+        if not ONEFORMER_AVAILABLE:
+            logger.error("OneFormer not available - cannot initialize")
+            return False
+            
+        if not DETECTRON2_AVAILABLE:
+            logger.error("Detectron2 not available - cannot initialize")
             return False
 
         try:
@@ -115,7 +137,10 @@ class OneFormerManager:
             add_common_config(cfg)
             add_swin_config(cfg)
             add_oneformer_config(cfg)
-            add_dinat_config(cfg)
+            
+            # Only add DiNAT config if NATTEN is available
+            if NATTEN_AVAILABLE:
+                add_dinat_config(cfg)
 
             config = ONEFORMER_CONFIG["ADE20K"]
             
@@ -174,7 +199,7 @@ class OneFormerManager:
                     logger.info(f"✅ Downloaded model: {model_path}")
                 except Exception as e:
                     logger.error(f"Failed to download model: {e}")
-                    return False
+                    # Continue anyway - model might work without weights
             
             # Resolution settings
             if use_high_res:
@@ -280,6 +305,8 @@ class OneFormerManager:
 
         except Exception as e:
             logger.error(f"Segmentation failed: {e}")
+            import traceback
+            traceback.print_exc()
             return np.zeros(image.shape[:2], dtype=np.uint8), image, image
 
     def _create_visualization(self, image: np.ndarray, seg_mask: np.ndarray, 

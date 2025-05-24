@@ -1,3 +1,3 @@
-# ninja log v6
-3	13811	1746905949446996000	/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/build/temp.linux-x86_64-3.8/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/src/vision.o	722f69c941cab6c9
-73	4408	1746907285895410000	/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/build/temp.linux-x86_64-3.8/mmfs1/home/sww35/OneFormerMentoria/oneformer/modeling/pixel_decoder/ops/src/cpu/ms_deform_attn_cpu.o	5f0dbcda3944b17f
+version https://git-lfs.github.com/spec/v1
+oid sha256:b837ed090de9e8eab962f74f3ba1de7dd0975e12d04437b915e65f86765db6c5
+size 493

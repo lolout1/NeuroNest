@@ -6,8 +6,6 @@ libgomp1
 libgl1-mesa-glx
 ffmpeg
 git
-cmake
+git-lfs
 build-essential
 python3-dev
-libopencv-dev
-ninja-build
