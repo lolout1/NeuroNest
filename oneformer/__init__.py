@@ -1,3 +1,7 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ff3b27ff6f6ca56e85435582d0d39dc360bddfd39f280f71d6a4973eebafcf29
-size 202
+# OneFormer package
+from . import config
+from . import data
+from . import modeling
+from . import utils
+
+__version__ = "1.0.0"
