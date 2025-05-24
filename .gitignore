@@ -3,6 +3,5 @@
 *.pyc
 *__pycache/
 blackspot/__pycache__
-*.pth
 models/
 output_floor_blackspot/
