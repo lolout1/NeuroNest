@@ -18,14 +18,14 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch CPU FIRST
+# CRITICAL: Install PyTorch CPU FIRST (required for detectron2)
 RUN pip install --no-cache-dir \
     torch==2.0.1+cpu \
     torchvision==0.15.2+cpu \
     torchaudio==2.0.2+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
-# Install core dependencies
+# Install core dependencies BEFORE detectron2
 RUN pip install --no-cache-dir \
     numpy==1.24.3 \
     opencv-python==4.8.1.78 \
@@ -34,13 +34,14 @@ RUN pip install --no-cache-dir \
     scikit-learn==1.3.2 \
     scikit-image==0.21.0
 
-# Copy application files FIRST (including local detectron2)
+# Copy application files (including detectron2 directory from LFS)
 COPY . .
 
-# Install local Detectron2 BEFORE other dependencies
+# CRITICAL: Install detectron2 from local directory using python -m pip
 RUN cd detectron2 && \
     python -m pip install -e . && \
-    cd ..
+    cd .. && \
+    echo "Detectron2 installed successfully from local directory"
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir \
@@ -56,7 +57,12 @@ RUN pip install --no-cache-dir \
     threadpoolctl==3.2.0
 
 # Install OneFormer package if available
-RUN if [ -f oneformer/setup.py ]; then cd oneformer && pip install -e . --no-deps; fi
+RUN if [ -f oneformer/setup.py ]; then \
+        cd oneformer && python -m pip install -e . --no-deps && cd ..; \
+    fi
+
+# Verify detectron2 installation
+RUN python -c "import detectron2; from detectron2.config import get_cfg; print('✅ Detectron2 successfully installed and functional')"
 
 # Create user
 RUN useradd -m -u 1000 user && chown -R user:user /home/user/app

@@ -1,6 +1,6 @@
 """
 NeuroNest: Advanced Environment Analysis for Alzheimer's Care
-Complete integrated application with enhanced blackspot detection
+Enhanced with local detectron2 installation
 """
 
 import os
@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def setup_python_paths():
-    """Setup Python paths with proper priority and detectron2 fix"""
+    """Setup Python paths with proper detectron2 integration"""
     project_root = Path(__file__).parent.absolute()
     
     # Clean any existing paths that might cause conflicts
@@ -32,11 +32,10 @@ def setup_python_paths():
     # Add project root FIRST (highest priority for our modules)
     sys.path.insert(0, str(project_root))
     
-    # Add local detectron2 path
+    # Add local detectron2 - should be installed via pip now, but ensure path
     detectron2_path = project_root / "detectron2"
     if detectron2_path.exists():
-        sys.path.insert(1, str(detectron2_path))
-        logger.info(f"✅ Local detectron2 path added: {detectron2_path}")
+        logger.info(f"✅ Local detectron2 directory found: {detectron2_path}")
     
     # Add oneformer directory LAST (to avoid config conflicts)
     oneformer_path = project_root / "oneformer"
@@ -49,79 +48,87 @@ def setup_python_paths():
     
     return project_root
 
-def get_safe_version(module, module_name):
-    """Safely get version from a module with multiple fallback methods"""
+def comprehensive_detectron2_check():
+    """Comprehensive detectron2 installation verification"""
+    logger.info("🔍 Performing comprehensive detectron2 check...")
+    
+    status = {
+        'installed': False,
+        'version': None,
+        'core_modules': {},
+        'fully_functional': False,
+        'installation_method': 'unknown'
+    }
+    
     try:
-        if hasattr(module, '__version__'):
-            return module.__version__
-        if hasattr(module, 'version'):
-            return module.version
-        
-        # Special handling for detectron2
-        if module_name == 'detectron2':
-            try:
-                import pkg_resources
-                return pkg_resources.get_distribution('detectron2').version
-            except:
-                # Check if we can import core detectron2 modules
-                try:
-                    from detectron2.config import get_cfg
-                    return "local_build"
-                except:
-                    return "installed_incomplete"
-        
-        return "installed"
-        
-    except Exception:
-        return "unknown"
-
-def check_detectron2_health():
-    """Comprehensive detectron2 health check"""
-    try:
+        # Basic import test
         import detectron2
-        version = get_safe_version(detectron2, 'detectron2')
+        status['installed'] = True
         
-        # Test core imports
-        core_imports = {}
+        # Try to get version
+        try:
+            if hasattr(detectron2, '__version__'):
+                status['version'] = detectron2.__version__
+            else:
+                # Try alternative version detection
+                try:
+                    import pkg_resources
+                    status['version'] = pkg_resources.get_distribution('detectron2').version
+                    status['installation_method'] = 'pip_package'
+                except:
+                    status['version'] = 'local_build'
+                    status['installation_method'] = 'local_editable'
+        except:
+            status['version'] = 'unknown'
+        
+        # Test core module imports
+        core_tests = {
+            'config': 'detectron2.config',
+            'engine': 'detectron2.engine',
+            'data': 'detectron2.data',
+            'model_zoo': 'detectron2.model_zoo',
+            'utils': 'detectron2.utils'
+        }
+        
+        for test_name, module_name in core_tests.items():
+            try:
+                __import__(module_name)
+                status['core_modules'][test_name] = True
+            except Exception as e:
+                status['core_modules'][test_name] = str(e)
+        
+        # Test actual functionality
         try:
             from detectron2.config import get_cfg
-            core_imports['config'] = True
-        except Exception as e:
-            core_imports['config'] = str(e)
-        
-        try:
             from detectron2.engine import DefaultPredictor
-            core_imports['engine'] = True
-        except Exception as e:
-            core_imports['engine'] = str(e)
-        
-        try:
             from detectron2.data import MetadataCatalog
-            core_imports['data'] = True
+            
+            # Try to create a config
+            cfg = get_cfg()
+            status['core_modules']['config_creation'] = True
+            status['fully_functional'] = True
+            
         except Exception as e:
-            core_imports['data'] = str(e)
+            status['core_modules']['config_creation'] = str(e)
+            status['fully_functional'] = False
         
-        working_imports = [k for k, v in core_imports.items() if v is True]
+        working_modules = [k for k, v in status['core_modules'].items() if v is True]
         
-        return {
-            'available': True,
-            'version': version,
-            'core_imports': core_imports,
-            'working_imports': working_imports,
-            'fully_functional': len(working_imports) >= 3
-        }
+        logger.info(f"✅ Detectron2 Status:")
+        logger.info(f"   - Installed: {status['installed']}")
+        logger.info(f"   - Version: {status['version']}")
+        logger.info(f"   - Installation: {status['installation_method']}")
+        logger.info(f"   - Working modules: {working_modules}")
+        logger.info(f"   - Fully functional: {status['fully_functional']}")
         
-    except ImportError:
-        return {
-            'available': False,
-            'version': None,
-            'core_imports': {},
-            'working_imports': [],
-            'fully_functional': False
-        }
+        return status
+        
+    except ImportError as e:
+        logger.error(f"❌ Detectron2 not available: {e}")
+        return status
 
 def check_system_dependencies():
-    """Comprehensive dependency checking with robust error handling"""
+    """Enhanced dependency checking with local detectron2"""
     deps_status = {
         'torch': False,
         'detectron2': False,
@@ -138,25 +145,17 @@ def check_system_dependencies():
     # Check PyTorch
     try:
         import torch
-        version = get_safe_version(torch, 'torch')
-        deps_status['torch'] = version
-        logger.info(f"✅ PyTorch {version} on {torch.device('cpu')}")
+        deps_status['torch'] = torch.__version__
+        logger.info(f"✅ PyTorch {torch.__version__} on {torch.device('cpu')}")
     except Exception as e:
         logger.warning(f"⚠️ PyTorch issue: {e}")
     
     # Enhanced Detectron2 check
-    detectron2_status = check_detectron2_health()
-    if detectron2_status['available']:
+    detectron2_status = comprehensive_detectron2_check()
+    if detectron2_status['installed']:
         deps_status['detectron2'] = detectron2_status['version']
-        if detectron2_status['fully_functional']:
-            logger.info(f"✅ Detectron2 {detectron2_status['version']} - fully functional")
-        else:
-            working = detectron2_status['working_imports']
-            logger.warning(f"⚠️ Detectron2 {detectron2_status['version']} - partial ({working})")
-    else:
-        logger.warning("⚠️ Detectron2 not available")
     
-    # Check other core dependencies
+    # Check other dependencies
     for dep_name, import_name in [
         ('opencv', 'cv2'),
         ('gradio', 'gradio'),
@@ -164,13 +163,13 @@ def check_system_dependencies():
     ]:
         try:
             module = __import__(import_name)
-            version = get_safe_version(module, dep_name)
+            version = getattr(module, '__version__', 'installed')
             deps_status[dep_name] = version
             logger.info(f"✅ {dep_name.title()} {version}")
         except Exception as e:
             logger.warning(f"⚠️ {dep_name.title()} issue: {e}")
     
-    # Check our modules with better error handling
+    # Check our modules
     module_checks = {
         'config': 'config.device_config',
         'oneformer_local': 'oneformer_local',
@@ -192,7 +191,7 @@ def check_system_dependencies():
 # ====================== ENHANCED APPLICATION CLASS ======================
 
 class NeuroNestApp:
-    """Enhanced application class with robust blackspot detection"""
+    """Enhanced application class with local detectron2 support"""
 
     def __init__(self):
         self.oneformer = None
@@ -203,27 +202,27 @@ class NeuroNestApp:
         self.detectron2_status = None
 
     def initialize(self, use_high_res: bool = False):
-        """Initialize all components with enhanced error handling"""
-        logger.info(f"Initializing NeuroNest application (high_res={use_high_res})...")
+        """Initialize with enhanced detectron2 handling"""
+        logger.info(f"🚀 Initializing NeuroNest with local detectron2 (high_res={use_high_res})...")
         
         self.use_high_res = use_high_res
         
-        # Check detectron2 status
+        # Get detectron2 status
         _, self.detectron2_status = check_system_dependencies()
         
         # Initialize OneFormer if detectron2 is functional
         oneformer_success = False
-        if self.detectron2_status['fully_functional']:
+        if self.detectron2_status and self.detectron2_status['fully_functional']:
             try:
                 from oneformer_local import OneFormerManager
                 self.oneformer = OneFormerManager()
                 oneformer_success = self.oneformer.initialize(use_high_res=use_high_res)
                 if oneformer_success:
-                    logger.info("✅ OneFormer initialized successfully")
+                    logger.info("✅ OneFormer initialized with functional detectron2")
                 else:
-                    logger.warning("⚠️ OneFormer initialization failed")
+                    logger.warning("⚠️ OneFormer initialization failed despite functional detectron2")
             except Exception as e:
-                logger.error(f"❌ OneFormer import/init failed: {e}")
+                logger.error(f"❌ OneFormer init failed: {e}")
         else:
             logger.info("⚠️ Skipping OneFormer - detectron2 not fully functional")
 
@@ -233,7 +232,7 @@ class NeuroNestApp:
             from blackspot.detector import BlackspotDetector
             self.blackspot_detector = BlackspotDetector()
             blackspot_success = self.blackspot_detector.initialize()
-            logger.info("✅ Enhanced blackspot detector initialized")
+            logger.info("✅ Enhanced floor-only blackspot detector (50px+) initialized")
         except Exception as e:
             logger.error(f"❌ Blackspot detector failed: {e}")
 
@@ -252,23 +251,22 @@ class NeuroNestApp:
             self.contrast_analyzer = None
 
         self.initialized = blackspot_success or oneformer_success or (self.contrast_analyzer is not None)
-        logger.info(f"NeuroNest initialization complete - Status: {self.initialized}")
+        
+        logger.info(f"🎯 NeuroNest initialization summary:")
+        logger.info(f"   - Overall success: {self.initialized}")
+        logger.info(f"   - OneFormer: {oneformer_success}")
+        logger.info(f"   - Enhanced Blackspot: {blackspot_success} (floor-only, 50px+)")
+        logger.info(f"   - Contrast Analysis: {self.contrast_analyzer is not None}")
+        
         return oneformer_success, blackspot_success
 
-    def analyze_image(self,
-                     image_path: str,
-                     blackspot_threshold: float = 0.5,
-                     contrast_threshold: float = 7.0,
-                     enable_blackspot: bool = True,
-                     enable_contrast: bool = True,
-                     show_labels: bool = True) -> Dict:
-        """Enhanced image analysis with robust blackspot detection"""
-
+    def analyze_image(self, image_path: str, **kwargs) -> Dict:
+        """Enhanced analysis with local detectron2 support"""
         if not self.initialized:
             return {"error": "Application not properly initialized"}
 
         try:
-            # Load and validate image
+            # Load image
             if not os.path.exists(image_path):
                 return {"error": f"Image file not found: {image_path}"}
 
@@ -277,7 +275,7 @@ class NeuroNestApp:
                 return {"error": f"Could not load image: {image_path}"}
 
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            logger.info(f"Loaded image with shape: {image_rgb.shape}")
+            logger.info(f"📸 Loaded image: {image_rgb.shape}")
 
             results = {
                 'original_image': image_rgb,
@@ -285,43 +283,39 @@ class NeuroNestApp:
                 'blackspot': None,
                 'contrast': None,
                 'statistics': {},
-                'show_labels': show_labels
+                'detectron2_status': self.detectron2_status
             }
 
             seg_mask = None
             floor_prior = None
 
-            # 1. Semantic Segmentation (if available)
-            if self.oneformer:
-                logger.info("Running semantic segmentation...")
+            # 1. Semantic Segmentation (if detectron2 functional)
+            if self.oneformer and self.detectron2_status['fully_functional']:
+                logger.info("🎯 Running OneFormer segmentation...")
                 try:
-                    seg_mask, seg_visualization, labeled_visualization = self.oneformer.semantic_segmentation(image_rgb)
-                    logger.info(f"Segmentation completed - unique classes: {len(np.unique(seg_mask))}")
-
+                    seg_mask, seg_vis, labeled_vis = self.oneformer.semantic_segmentation(image_rgb)
+                    
                     results['segmentation'] = {
-                        'visualization': seg_visualization,
-                        'labeled_visualization': labeled_visualization,
+                        'visualization': seg_vis,
+                        'labeled_visualization': labeled_vis,
                         'mask': seg_mask
                     }
-
-                    # Extract floor areas
+                    
                     floor_prior = self.oneformer.extract_floor_areas(seg_mask)
-                    floor_coverage = np.sum(floor_prior) / (seg_mask.shape[0] * seg_mask.shape[1]) * 100
-                    logger.info(f"Floor extraction: {np.sum(floor_prior)} pixels ({floor_coverage:.1f}%)")
-
+                    logger.info(f"✅ Segmentation complete: {len(np.unique(seg_mask))} classes, {np.sum(floor_prior)} floor pixels")
+                    
                 except Exception as e:
-                    logger.error(f"Segmentation failed: {e}")
-                    seg_mask = None
+                    logger.error(f"❌ Segmentation failed: {e}")
 
-            # 2. Enhanced Blackspot Detection (always runs)
-            if enable_blackspot and self.blackspot_detector:
-                logger.info("Running enhanced blackspot detection...")
+            # 2. Enhanced Floor-Only Blackspot Detection (50px+ minimum)
+            if kwargs.get('enable_blackspot', True) and self.blackspot_detector:
+                logger.info("⚫ Running enhanced floor-only blackspot detection (50px+ minimum)...")
                 try:
-                    # If no floor_prior from segmentation, create fallback
+                    # Create floor fallback if no segmentation
                     if floor_prior is None:
                         h, w = image_rgb.shape[:2]
                         floor_prior = np.zeros((h, w), dtype=bool)
-                        floor_prior[int(h*0.7):, :] = True  # Bottom 30% as floor
+                        floor_prior[int(h*0.7):, :] = True
                     
                     blackspot_results = self.blackspot_detector.detect_blackspots(
                         image_rgb, 
@@ -329,24 +323,18 @@ class NeuroNestApp:
                         segmentation_mask=seg_mask
                     )
                     
-                    logger.info(f"Enhanced blackspot detection: {blackspot_results.get('num_detections', 0)} spots, "
-                               f"{blackspot_results.get('coverage_percentage', 0):.2f}% coverage")
+                    logger.info(f"✅ Enhanced blackspot detection: {blackspot_results.get('num_detections', 0)} spots "
+                               f"({blackspot_results.get('coverage_percentage', 0):.2f}% coverage)")
                     
                     results['blackspot'] = blackspot_results
-
+                    
                 except Exception as e:
-                    logger.error(f"Blackspot detection failed: {e}")
-                    results['blackspot'] = None
+                    logger.error(f"❌ Blackspot detection failed: {e}")
 
-            # 3. Contrast Analysis (if available)
-            if enable_contrast and self.contrast_analyzer:
-                logger.info("Running contrast analysis...")
+            # 3. Contrast Analysis
+            if kwargs.get('enable_contrast', True) and self.contrast_analyzer:
+                logger.info("🎨 Running contrast analysis...")
                 try:
-                    # Update thresholds
-                    self.contrast_analyzer.wcag_threshold = min(contrast_threshold, 4.5)
-                    self.contrast_analyzer.alzheimer_threshold = contrast_threshold
-
-                    # Use segmentation mask if available, otherwise create dummy
                     if seg_mask is not None:
                         analysis_mask = seg_mask
                     else:
@@ -354,44 +342,42 @@ class NeuroNestApp:
                         analysis_mask = np.random.randint(0, 10, (h, w), dtype=np.uint8)
                     
                     contrast_results = self.contrast_analyzer.analyze_contrast(image_rgb, analysis_mask)
-                    
-                    total_issues = contrast_results['statistics']['total_issues']
-                    critical_issues = contrast_results['statistics']['critical_count']
-                    
-                    logger.info(f"Contrast analysis: {total_issues} issues ({critical_issues} critical)")
                     results['contrast'] = contrast_results
-
+                    
+                    logger.info(f"✅ Contrast analysis: {contrast_results['statistics']['total_issues']} issues")
+                    
                 except Exception as e:
-                    logger.error(f"Contrast analysis failed: {e}")
-                    results['contrast'] = None
+                    logger.error(f"❌ Contrast analysis failed: {e}")
 
-            # 4. Generate comprehensive statistics
-            stats = self._generate_enhanced_statistics(results)
-            results['statistics'] = stats
-
-            logger.info("Enhanced image analysis completed successfully")
+            # Generate statistics
+            results['statistics'] = self._generate_statistics(results)
+            
+            logger.info("🎉 Enhanced image analysis completed successfully")
             return results
 
         except Exception as e:
-            logger.error(f"Critical error in image analysis: {e}")
+            logger.error(f"💥 Critical analysis error: {e}")
             return {"error": f"Analysis failed: {str(e)}"}
 
-    def _generate_enhanced_statistics(self, results: Dict) -> Dict:
+    def _generate_statistics(self, results: Dict) -> Dict:
         """Generate comprehensive statistics"""
         stats = {}
+        
+        # Detectron2 status
+        stats['detectron2'] = {
+            'available': self.detectron2_status['installed'] if self.detectron2_status else False,
+            'functional': self.detectron2_status['fully_functional'] if self.detectron2_status else False,
+            'version': self.detectron2_status['version'] if self.detectron2_status else None
+        }
 
         # Segmentation stats
         if results.get('segmentation'):
-            try:
-                unique_classes = np.unique(results['segmentation']['mask'])
-                stats['segmentation'] = {
-                    'num_classes': len(unique_classes),
-                    'image_size': results['segmentation']['mask'].shape,
-                    'resolution_mode': 'high (1280x1280)' if self.use_high_res else 'standard (640x640)',
-                    'oneformer_available': True
-                }
-            except Exception:
-                stats['segmentation'] = {'num_classes': 0, 'oneformer_available': False}
+            unique_classes = np.unique(results['segmentation']['mask'])
+            stats['segmentation'] = {
+                'num_classes': len(unique_classes),
+                'oneformer_available': True,
+                'resolution': 'high' if self.use_high_res else 'standard'
+            }
         else:
             stats['segmentation'] = {'oneformer_available': False}
 
@@ -399,186 +385,154 @@ class NeuroNestApp:
         if results.get('blackspot'):
             bs = results['blackspot']
             stats['blackspot'] = {
-                'floor_area_pixels': bs.get('floor_area', 0),
-                'blackspot_area_pixels': bs.get('blackspot_area', 0),
-                'coverage_percentage': bs.get('coverage_percentage', 0),
                 'num_detections': bs.get('num_detections', 0),
-                'avg_confidence': bs.get('avg_confidence', 0),
-                'risk_score': bs.get('risk_score', 0),
-                'detection_method': bs.get('detection_method', 'enhanced_pixel_based'),
-                'floor_breakdown': bs.get('floor_breakdown', {})
+                'coverage_percentage': bs.get('coverage_percentage', 0),
+                'floor_area_pixels': bs.get('floor_area', 0),
+                'detection_method': 'enhanced_floor_only_50px_minimum',
+                'risk_score': bs.get('risk_score', 0)
             }
-        else:
-            stats['blackspot'] = {}
 
         # Contrast stats
         if results.get('contrast'):
-            try:
-                cs = results['contrast']['statistics']
-                stats['contrast'] = dict(cs)
-                
-                critical_count = cs.get('critical_count', 0)
-                total_issues = cs.get('total_issues', 0)
-                
-                if critical_count > 0:
-                    risk_level = 'critical'
-                elif total_issues > 15:
-                    risk_level = 'high'
-                elif total_issues > 8:
-                    risk_level = 'medium'
-                elif total_issues > 3:
-                    risk_level = 'low'
-                else:
-                    risk_level = 'excellent'
-                
-                stats['contrast']['risk_level'] = risk_level
-                stats['contrast']['risk_score'] = critical_count * 3 + total_issues
-                
-            except Exception:
-                stats['contrast'] = {}
+            cs = results['contrast']['statistics']
+            stats['contrast'] = {
+                'total_issues': cs.get('total_issues', 0),
+                'critical_count': cs.get('critical_count', 0),
+                'risk_level': 'critical' if cs.get('critical_count', 0) > 0 else 'good'
+            }
 
         return stats
 
 # ====================== INTERFACE CREATION ======================
 
-def create_advanced_interface(app_instance):
-    """Create advanced interface using the NeuroNestApp instance"""
+def create_enhanced_interface(app_instance):
+    """Create interface highlighting local detectron2 capabilities"""
     try:
         import gradio as gr
-        import numpy as np
-        from PIL import Image
         import tempfile
+        from PIL import Image
         
-        def analyze_uploaded_image(image, blackspot_threshold, contrast_threshold, 
-                                 enable_blackspot, enable_contrast, use_high_res, show_labels):
+        # Get system status for display
+        detectron2_status = app_instance.detectron2_status
+        d2_functional = detectron2_status and detectron2_status.get('fully_functional', False)
+        d2_version = detectron2_status.get('version', 'unknown') if detectron2_status else 'not available'
+        
+        def analyze_image(image, blackspot_threshold, contrast_threshold, 
+                         enable_blackspot, enable_contrast, use_high_res, show_labels):
             if image is None:
-                return None, None, None, None, None, "Please upload an image to analyze."
+                return None, None, None, None, None, "Please upload an image."
             
             try:
-                # Save uploaded image to temporary file
                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
                     if hasattr(image, 'save'):
                         image.save(tmp.name)
                     else:
                         Image.fromarray(image).save(tmp.name)
                     
-                    # Reinitialize if resolution changed
+                    # Reinitialize if needed
                     if use_high_res != app_instance.use_high_res:
                         app_instance.initialize(use_high_res=use_high_res)
                     
                     # Run analysis
                     results = app_instance.analyze_image(
                         image_path=tmp.name,
-                        blackspot_threshold=blackspot_threshold,
-                        contrast_threshold=contrast_threshold,
                         enable_blackspot=enable_blackspot,
-                        enable_contrast=enable_contrast,
-                        show_labels=show_labels
+                        enable_contrast=enable_contrast
                     )
                     
-                    # Clean up temp file
                     os.unlink(tmp.name)
                 
                 if "error" in results:
-                    return None, None, None, None, None, f"Error: {results['error']}"
+                    return None, None, None, None, None, f"❌ {results['error']}"
                 
-                # Extract outputs
+                # Extract visualizations
                 seg_vis = None
                 if results.get('segmentation'):
-                    if show_labels:
-                        seg_vis = results['segmentation'].get('labeled_visualization')
-                    else:
-                        seg_vis = results['segmentation'].get('visualization')
+                    seg_vis = results['segmentation'].get('labeled_visualization' if show_labels else 'visualization')
                 
-                seg_labeled = results.get('segmentation', {}).get('labeled_visualization')
-                contrast_vis = results.get('contrast', {}).get('visualization')
-                
-                # Blackspot visualization
                 blackspot_vis = None
                 if results.get('blackspot') and 'enhanced_views' in results['blackspot']:
                     blackspot_vis = results['blackspot']['enhanced_views'].get('high_contrast_overlay')
                 
-                # Combined visualization
-                combined_vis = contrast_vis
-                if results.get('blackspot') and blackspot_vis is not None:
-                    combined_vis = blackspot_vis
+                contrast_vis = results.get('contrast', {}).get('visualization')
                 
                 # Generate report
-                try:
-                    from utils.helpers import generate_analysis_report
-                    report = generate_analysis_report(results)
-                except:
-                    # Fallback report generation
-                    stats = results.get('statistics', {})
-                    blackspot_stats = stats.get('blackspot', {})
-                    contrast_stats = stats.get('contrast', {})
-                    
-                    report = f"""
+                stats = results.get('statistics', {})
+                bs_stats = stats.get('blackspot', {})
+                contrast_stats = stats.get('contrast', {})
+                d2_stats = stats.get('detectron2', {})
+                
+                report = f"""
 # 🧠 NeuroNest Analysis Report
+**Enhanced with Local Detectron2 Installation**
 
-## 📊 Analysis Summary
+## 🔧 System Status
+- **Detectron2:** {"✅ v" + str(d2_stats.get('version', 'unknown')) if d2_stats.get('functional') else "⚠️ Limited"}
+- **OneFormer:** {"✅ Active" if results.get('segmentation') else "⚠️ Fallback mode"}
+- **Enhanced Blackspot:** ✅ Floor-only detection (50px+ minimum)
 
-### Blackspot Detection
-- **Detections:** {blackspot_stats.get('num_detections', 0)} blackspots found
-- **Coverage:** {blackspot_stats.get('coverage_percentage', 0):.2f}% of floor area
-- **Risk Score:** {blackspot_stats.get('risk_score', 0)}/10
+## ⚫ Enhanced Blackspot Analysis
+- **Method:** Floor-only detection with 50px minimum size filter
+- **Detections:** {bs_stats.get('num_detections', 0)} blackspots found
+- **Floor Coverage:** {bs_stats.get('coverage_percentage', 0):.2f}%
+- **Risk Score:** {bs_stats.get('risk_score', 0)}/10
 
-### Contrast Analysis  
+## 🎨 Contrast Analysis
 - **Total Issues:** {contrast_stats.get('total_issues', 0)}
 - **Critical Issues:** {contrast_stats.get('critical_count', 0)}
-- **Risk Level:** {contrast_stats.get('risk_level', 'unknown')}
+- **Risk Level:** {contrast_stats.get('risk_level', 'unknown').title()}
 
-### Recommendations
-- Review all detected blackspots for safety
-- Address critical contrast issues immediately
-- Ensure minimum 7:1 contrast ratios for Alzheimer's care
-                    """
+## 📋 Alzheimer's Care Recommendations
+### ✅ Best Practices:
+1. **7:1 contrast minimum** between adjacent objects
+2. **No blackspots on floors** - all detected spots should be addressed
+3. **Warm colors preferred** (red, yellow, orange vs cool blues/greens)
+4. **High saturation** - avoid muted or pastel colors
+
+### ⚠️ Immediate Actions Needed:
+{"- **Address " + str(bs_stats.get('num_detections', 0)) + " blackspots** - potential trip hazards" if bs_stats.get('num_detections', 0) > 0 else "- No blackspots detected ✅"}
+{"- **Fix " + str(contrast_stats.get('critical_count', 0)) + " critical contrast issues**" if contrast_stats.get('critical_count', 0) > 0 else "- Contrast levels acceptable ✅"}
+
+*Analysis powered by local Detectron2 v{d2_version} + Enhanced NeuroNest AI*
+                """
                 
-                return seg_vis, seg_labeled, blackspot_vis, contrast_vis, combined_vis, report
+                return seg_vis, seg_vis, blackspot_vis, contrast_vis, blackspot_vis, report
                 
             except Exception as e:
                 return None, None, None, None, None, f"Analysis failed: {str(e)}"
         
         with gr.Blocks(
-            title="NeuroNest - Advanced Alzheimer's Environment Analysis",
+            title="NeuroNest - Enhanced with Local Detectron2",
             theme=gr.themes.Soft(primary_hue="orange", secondary_hue="blue")
         ) as interface:
             
-            gr.Markdown("""
-            # 🧠 NeuroNest: Advanced Environment Analysis for Alzheimer's Care
+            gr.Markdown(f"""
+            # 🧠 NeuroNest: Advanced Alzheimer's Environment Analysis
+            **Enhanced with Local Detectron2 v{d2_version}**
             
-            **Enhanced with Robust Blackspot Detection**  
             *Abheek Pradhan | Faculty: Dr. Nadim Adi and Dr. Greg Lakomski*  
             *Texas State University - Computer Science & Interior Design*
             
-            ---
+            ### 🔧 Enhanced Features:
+            - **Local Detectron2:** {"✅ v" + d2_version + " fully functional" if d2_functional else "⚠️ Limited functionality"}
+            - **Floor-Only Blackspot Detection:** ✅ 50px+ minimum size filter
+            - **OneFormer Segmentation:** {"✅ Available" if d2_functional else "⚠️ Fallback mode"}
+            - **Alzheimer's Standards:** ✅ 7:1 contrast optimization
             """)
-            
-            system_status = f"""
-            ### 🔧 System Status:
-            - **Detectron2:** {"✅ Functional" if app_instance.detectron2_status and app_instance.detectron2_status['fully_functional'] else "⚠️ Limited"}
-            - **OneFormer:** {"✅ Available" if app_instance.oneformer else "⚠️ Fallback mode"}
-            - **Blackspot Detection:** ✅ Enhanced (floor-only, 50px+ minimum)
-            - **Contrast Analysis:** {"✅ Available" if app_instance.contrast_analyzer else "⚠️ Limited"}
-            """
-            
-            gr.Markdown(system_status)
             
             with gr.Row():
                 with gr.Column(scale=1):
-                    # Input controls
                     image_input = gr.Image(
                         label="📸 Upload Room Image",
                         type="pil",
-                        height=300,
-                        sources=["upload", "clipboard"]
+                        height=300
                     )
                     
-                    with gr.Accordion("🔧 Analysis Settings", open=True):
+                    with gr.Accordion("🎛️ Analysis Settings", open=True):
                         use_high_res = gr.Checkbox(
                             value=False,
-                            label="High Resolution Analysis",
-                            info="1280x1280 for better accuracy"
+                            label="High Resolution (1280x1280)",
+                            info="Better accuracy, slower processing"
                         )
                         
                         show_labels = gr.Checkbox(
@@ -589,14 +543,11 @@ def create_advanced_interface(app_instance):
                         enable_blackspot = gr.Checkbox(
                             value=True,
                             label="Enhanced Blackspot Detection",
-                            info="Floor-only, 50px+ minimum"
+                            info="Floor-only, 50px+ minimum size"
                         )
                         
                         blackspot_threshold = gr.Slider(
-                            minimum=0.1,
-                            maximum=0.9,
-                            value=0.5,
-                            step=0.05,
+                            minimum=0.1, maximum=0.9, value=0.5, step=0.05,
                             label="Blackspot Sensitivity"
                         )
                         
@@ -606,239 +557,90 @@ def create_advanced_interface(app_instance):
                         )
                         
                         contrast_threshold = gr.Slider(
-                            minimum=1.0,
-                            maximum=10.0,
-                            value=7.0,
-                            step=0.1,
+                            minimum=1.0, maximum=10.0, value=7.0, step=0.1,
                             label="Contrast Threshold (7:1 for Alzheimer's)"
                         )
                     
                     analyze_btn = gr.Button(
-                        "🔍 Analyze Environment",
+                        "🔍 Analyze with Enhanced Detection",
                         variant="primary",
                         size="lg"
                     )
                 
                 with gr.Column(scale=3):
-                    # Main output
-                    main_output = gr.Image(
-                        label="🎯 Analysis Result",
-                        height=400
-                    )
+                    main_output = gr.Image(label="🎯 Analysis Result", height=400)
                     
-                    # Detailed tabs
                     with gr.Tabs():
-                        with gr.Tab("📊 Analysis Report"):
-                            analysis_report = gr.Markdown(
-                                value="Upload an image and click 'Analyze Environment' for comprehensive results."
-                            )
+                        with gr.Tab("📊 Enhanced Analysis Report"):
+                            analysis_report = gr.Markdown()
                         
                         with gr.Tab("🏷️ Object Segmentation"):
-                            labeled_output = gr.Image(
-                                label="Object Labels",
-                                height=400
-                            )
+                            seg_output = gr.Image(label="OneFormer Segmentation", height=400)
                         
-                        with gr.Tab("⚫ Enhanced Blackspot Detection"):
-                            blackspot_output = gr.Image(
-                                label="Floor Safety Analysis (50px+ minimum)",
-                                height=400
-                            )
+                        with gr.Tab("⚫ Floor Blackspot Detection"):
+                            blackspot_output = gr.Image(label="Enhanced Floor-Only Detection (50px+)", height=400)
                         
                         with gr.Tab("🎨 Contrast Analysis"):
-                            contrast_output = gr.Image(
-                                label="Color Contrast Issues",
-                                height=400
-                            )
+                            contrast_output = gr.Image(label="Alzheimer's Contrast Standards", height=400)
                         
                         with gr.Tab("🔄 Combined View"):
-                            combined_output = gr.Image(
-                                label="Complete Assessment",
-                                height=400
-                            )
+                            combined_output = gr.Image(label="Complete Assessment", height=400)
             
-            # Connect the interface
             analyze_btn.click(
-                fn=analyze_uploaded_image,
-                inputs=[
-                    image_input, blackspot_threshold, contrast_threshold,
-                    enable_blackspot, enable_contrast, use_high_res, show_labels
-                ],
-                outputs=[
-                    main_output, labeled_output, blackspot_output,
-                    contrast_output, combined_output, analysis_report
-                ]
+                analyze_image,
+                inputs=[image_input, blackspot_threshold, contrast_threshold,
+                        enable_blackspot, enable_contrast, use_high_res, show_labels],
+                outputs=[main_output, seg_output, blackspot_output, 
+                        contrast_output, combined_output, analysis_report]
             )
         
         return interface
         
     except Exception as e:
-        logger.error(f"❌ Advanced interface creation failed: {e}")
+        logger.error(f"❌ Enhanced interface creation failed: {e}")
         return None
 
-def create_working_interface():
-    """Create working interface with basic functionality"""
-    try:
-        import gradio as gr
-        import numpy as np
-        
-        def basic_analysis(image):
-            if image is None:
-                return None, "Please upload an image."
-            
-            img_array = np.array(image)
-            height, width = img_array.shape[:2]
-            
-            # Basic analysis
-            gray = np.mean(img_array, axis=2) if len(img_array.shape) == 3 else img_array
-            brightness_std = np.std(gray)
-            mean_brightness = np.mean(img_array)
-            contrast_score = min(10, brightness_std / 10)
-            
-            # Simple blackspot detection on bottom area
-            bottom_area = img_array[int(height*0.7):, :]
-            dark_pixels = np.sum(np.mean(bottom_area, axis=2) < 50)
-            total_floor_pixels = bottom_area.shape[0] * bottom_area.shape[1]
-            blackspot_percentage = (dark_pixels / total_floor_pixels) * 100
-            
-            report = f"""
-# 🧠 NeuroNest - Basic Analysis Mode
-
-## 📊 Image Assessment
-
-### Properties
-- **Resolution:** {width} × {height} pixels
-- **Brightness:** {mean_brightness:.1f}/255  
-- **Contrast Score:** {contrast_score:.1f}/10
-
-### Basic Floor Safety Check
-- **Dark areas on floor:** {blackspot_percentage:.1f}%
-- **Status:** {"⚠️ CHECK NEEDED" if blackspot_percentage > 5 else "✅ Looks good"}
-
-### Alzheimer's Environment Guidelines
-
-#### ✅ Essential Requirements:
-1. **7:1 contrast minimum** between adjacent objects
-2. **No dark spots on floors** (trip hazards)
-3. **Warm colors preferred** (red, yellow, orange)
-4. **High saturation** - avoid pastels
-5. **30°+ hue separation** on color wheel
-
-#### Current Assessment:
-- **Contrast:** {"Good" if contrast_score > 5 else "Needs improvement"}
-- **Floor Safety:** {"Attention needed" if blackspot_percentage > 5 else "Acceptable"}
-
-*Enhanced AI analysis with object segmentation available when system fully initializes.*
-            """
-            
-            return image, report
-        
-        with gr.Blocks(title="NeuroNest - Basic Mode") as interface:
-            gr.Markdown("""
-            # 🧠 NeuroNest: Alzheimer's Environment Analysis
-            **Basic Analysis Mode**
-            
-            *Texas State University - Enhanced Blackspot Detection*
-            """)
-            
-            with gr.Row():
-                with gr.Column():
-                    image_input = gr.Image(label="📸 Room Image", type="pil")
-                    analyze_btn = gr.Button("🔍 Basic Analysis", variant="primary")
-                
-                with gr.Column():
-                    result_image = gr.Image(label="Result")
-                    analysis_report = gr.Markdown()
-            
-            analyze_btn.click(basic_analysis, inputs=[image_input], outputs=[result_image, analysis_report])
-        
-        return interface
-        
-    except Exception as e:
-        logger.error(f"❌ Basic interface failed: {e}")
-        return None
-
-# ====================== MAIN APPLICATION ======================
+# ====================== MAIN ======================
 
 def main():
-    """Main application entry point with enhanced initialization"""
-    logger.info("🚀 Starting NeuroNest Application with Enhanced Blackspot Detection")
+    """Main with enhanced local detectron2 support"""
+    logger.info("🚀 Starting NeuroNest with Enhanced Local Detectron2 Integration")
     
     try:
-        # Setup paths with detectron2 fix
+        # Setup paths
         project_root = setup_python_paths()
         
-        # Check system status
+        # Check system
         deps, detectron2_status = check_system_dependencies()
         
-        # Log system capabilities
-        working_deps = [k for k, v in deps.items() if v]
-        logger.info(f"✅ Working dependencies: {working_deps}")
-        logger.info(f"🔧 Detectron2 status: {detectron2_status}")
-        
-        # Initialize core application
+        # Initialize app
         app = NeuroNestApp()
-        init_success = False
+        oneformer_ok, blackspot_ok = app.initialize()
         
-        try:
-            oneformer_ok, blackspot_ok = app.initialize(use_high_res=False)
-            init_success = app.initialized
-            logger.info(f"✅ NeuroNest core initialized: {init_success}")
-            logger.info(f"   - OneFormer: {oneformer_ok}")
-            logger.info(f"   - Enhanced Blackspot: {blackspot_ok}")
-        except Exception as e:
-            logger.warning(f"⚠️ Core initialization failed: {e}")
+        # Create interface
+        if app.initialized and deps.get('gradio'):
+            interface = create_enhanced_interface(app)
+            if interface:
+                logger.info("✅ Enhanced interface with local detectron2 created")
+                
+                # Launch
+                logger.info("🌐 Launching enhanced NeuroNest...")
+                interface.queue(default_concurrency_limit=2, max_size=10).launch(
+                    server_name="0.0.0.0", port=7860, share=False, show_error=True
+                )
+                return True
         
-        # Create appropriate interface
-        interface = None
-        
-        if init_success and deps.get('gradio'):
-            try:
-                interface = create_advanced_interface(app)
-                if interface:
-                    logger.info("✅ Advanced interface with enhanced blackspot detection created")
-            except Exception as e:
-                logger.warning(f"⚠️ Advanced interface failed: {e}")
-        
-        if interface is None:
-            try:
-                interface = create_working_interface()
-                if interface:
-                    logger.info("✅ Basic interface created")
-            except Exception as e:
-                logger.error(f"❌ Basic interface failed: {e}")
-        
-        if interface is None:
-            logger.error("❌ No interface could be created")
-            return False
-        
-        # Launch interface
-        logger.info("🌐 Launching interface...")
-        interface.queue(
-            default_concurrency_limit=2,
-            max_size=10
-        ).launch(
-            server_name="0.0.0.0",
-            server_port=7860,
-            share=False,
-            show_error=True,
-            prevent_thread_lock=False
-        )
-        
-        return True
+        logger.error("❌ Failed to create interface")
+        return False
         
     except Exception as e:
-        logger.error(f"❌ Fatal error in main: {e}")
-        time.sleep(3600)  # Keep container alive for debugging
+        logger.error(f"💥 Fatal error: {e}")
+        time.sleep(3600)
         return False
 
 if __name__ == "__main__":
-    try:
-        success = main()
-        if success:
-            logger.info("✅ NeuroNest started successfully with enhanced blackspot detection")
-        else:
-            logger.error("❌ NeuroNest failed to start")
-    except Exception as e:
-        logger.error(f"❌ Critical error: {e}")
-        time.sleep(3600)
+    success = main()
+    if success:
+        logger.info("🎉 NeuroNest with enhanced local detectron2 started successfully!")
+    else:
+        logger.error("💥 NeuroNest failed to start")
