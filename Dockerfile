@@ -1,35 +1,50 @@
-FROM python:3.10 as builder
+FROM python:3.10-slim
 
-WORKDIR /app
+WORKDIR /home/user/app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    git wget build-essential \
-    libgl1-mesa-glx libglib2.0-0 \
-    libsm6 libxext6 libxrender-dev \
-    libgomp1 ffmpeg cmake \
+    git \
+    wget \
+    build-essential \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    ffmpeg \
+    cmake \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# STAGE 1: Install PyTorch FIRST
+# Install PyTorch CPU FIRST
 RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
     torch==2.0.1+cpu \
     torchvision==0.15.2+cpu \
-    torchaudio==2.0.2+cpu
+    torchaudio==2.0.2+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
 
-# STAGE 2: Install other dependencies
+# Install core dependencies
 RUN pip install --no-cache-dir \
     numpy==1.24.3 \
-    scipy==1.10.1 \
     opencv-python==4.8.1.78 \
     Pillow==10.2.0 \
+    scipy==1.10.1 \
     scikit-learn==1.3.2 \
-    scikit-image==0.21.0 \
-    gradio==4.19.2 \
+    scikit-image==0.21.0
+
+# Copy application files FIRST
+COPY . .
+
+# Install local Detectron2 (from copied detectron2/ directory)
+RUN cd detectron2 && pip install -e .
+
+# Install remaining dependencies
+RUN pip install --no-cache-dir \
+    gradio==4.44.1 \
     matplotlib==3.7.2 \
     tqdm==4.66.1 \
-    requests>=2.28.0 \
-    pandas>=1.5.0 \
     omegaconf==2.3.0 \
     timm==0.9.12 \
     einops==0.7.0 \
@@ -38,37 +53,19 @@ RUN pip install --no-cache-dir \
     transformers>=4.21.0 \
     threadpoolctl==3.2.0
 
-# STAGE 3: Install Detectron2 (now torch is available)
-RUN pip install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'
-
-# Final stage
-FROM python:3.10
-
-WORKDIR /home/user/app
-
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx libglib2.0-0 \
-    libsm6 libxext6 libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy application
-COPY . .
-
-# Install local OneFormer
-RUN cd oneformer && pip install -e .
+# Install OneFormer package if available
+RUN if [ -f oneformer/setup.py ]; then cd oneformer && pip install -e . --no-deps; fi
 
 # Create user
-RUN useradd -m -u 1000 user
+RUN useradd -m -u 1000 user && chown -R user:user /home/user/app
 USER user
 
+# Environment variables
 ENV PYTHONPATH=/home/user/app
 ENV GRADIO_SERVER_NAME=0.0.0.0
 ENV GRADIO_SERVER_PORT=7860
+ENV DEVICE=cpu
+ENV TORCH_HOME=/tmp
 
 EXPOSE 7860
 
