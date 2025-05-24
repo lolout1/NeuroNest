@@ -16,3 +16,4 @@
 # Detectron2 directory - use multiple patterns
 detectron2/** filter=lfs diff=lfs merge=lfs -text
 detectron2/ filter=lfs diff=lfs merge=lfs -text
+detectron2/* filter=lfs diff=lfs merge=lfs -text
