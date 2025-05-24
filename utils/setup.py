@@ -12,6 +12,39 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 
+def setup_python_paths():
+    """Setup Python paths for detectron2 and oneformer integration"""
+    project_root = Path(__file__).parent.parent.absolute()
+    
+    # Add project root
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    
+    # Add detectron2 if it exists
+    detectron2_path = project_root / "detectron2"
+    if detectron2_path.exists() and str(detectron2_path) not in sys.path:
+        sys.path.insert(1, str(detectron2_path))
+    
+    # Add oneformer paths
+    oneformer_path = project_root / "oneformer"
+    if oneformer_path.exists() and str(oneformer_path) not in sys.path:
+        sys.path.append(str(oneformer_path))
+    
+    return project_root
+
+
+def setup_logging(level=logging.INFO):
+    """Setup logging configuration"""
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    return logging.getLogger(__name__)
+
+
 def check_detectron2_comprehensive():
     """Comprehensive detectron2 health check"""
     logger.info("🔍 Checking detectron2 availability...")
@@ -105,13 +138,22 @@ def validate_environment():
     except ImportError:
         logger.warning("⚠️ Detectron2 not available - some features may be limited")
     
+    # Check for natten (needed for OneFormer)
+    try:
+        import natten
+        logger.info("✅ NATTEN available")
+    except ImportError:
+        logger.warning("⚠️ NATTEN not available - OneFormer may not work properly")
+        issues.append("NATTEN not installed (required for OneFormer)")
+    
     # Check model files
+    project_root = Path(__file__).parent.parent
     model_paths = [
         "models/250_16_swin_l_oneformer_ade20k_160k.pth",
         "oneformer/250_16_swin_l_oneformer_ade20k_160k.pth"
     ]
     
-    model_found = any(os.path.exists(p) for p in model_paths)
+    model_found = any((project_root / p).exists() for p in model_paths)
     if not model_found:
         logger.warning("⚠️ OneFormer model weights not found locally")
     
