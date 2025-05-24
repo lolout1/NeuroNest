@@ -1,41 +1,56 @@
-# Stage 1: Core dependencies first
-torch==1.10.1
-torchvision==0.11.2
+# Core dependencies (torch installed separately with CPU)
 numpy==1.24.4
+opencv-python==4.8.1.78
+Pillow==10.2.0
+
+# Scientific computing
 scipy==1.10.1
 matplotlib==3.7.5
-Pillow==10.2.0
-opencv-python==4.11.0.86
-
-# Stage 2: Basic ML/CV libraries
+scikit-learn==1.3.0
 scikit-image==0.21.0
-scikit-learn==1.3.2
-imageio==2.31.5
 
-# Stage 3: Configuration and utilities
+# IMPORTANT: Install detectron2 AFTER torch
+detectron2 @ git+https://github.com/facebookresearch/detectron2.git@v0.6
+
+# OneFormer dependencies
+git+https://github.com/SHI-Labs/OneFormer.git
+timm==0.4.12
+transformers==4.33.2
+huggingface-hub==0.20.3
+
+# Web interface
+gradio==4.44.1
+
+# Configuration and utilities
 omegaconf==2.3.0
 pyyaml==6.0.1
 tqdm==4.66.1
 requests==2.31.0
 psutil==5.9.5
+packaging==23.1
 
-# Stage 4: Advanced ML dependencies
-timm==0.4.12
-transformers==4.33.2
-huggingface-hub==0.20.3
+# Additional ML dependencies
 fairscale==0.4.13
 einops==0.7.0
 fvcore==0.1.5.post20221221
 
-# Stage 5: Web interface
-gradio==4.44.1
-
-# Stage 6: Color science
+# Color science for contrast analysis
 colorspacious==1.1.2
+colour-science==0.4.2
 
-# Stage 7: Additional utilities
+# Image processing
+imageio==2.31.5
+tifffile==2023.7.10
+PyWavelets==1.4.1
+
+# Dataset handling
 pycocotools==2.0.7
-threadpoolctl==3.2.0
-diffdist==0.1
+cityscapesScripts==2.2.2
 
-# DO NOT install detectron2 and OneFormer here - install in app.py at runtime
+# Threading optimization
+threadpoolctl==3.2.0
+
+# Additional utilities
+pandas==2.0.3
+seaborn==0.12.2
+diffdist==0.1

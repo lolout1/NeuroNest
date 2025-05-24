@@ -1,4 +1,4 @@
-FROM python:3.8-slim
+FROM python:3.8.18-slim
 
 # Set working directory
 WORKDIR /home/user/app
@@ -30,7 +30,11 @@ COPY requirements.txt .
 
 # Install Python dependencies in correct order
 RUN pip install --no-cache-dir -U pip setuptools wheel
-RUN pip install --no-cache-dir torch==1.10.1 torchvision==0.11.2 numpy==1.24.4
+
+# Install torch first
+RUN pip install --no-cache-dir torch==1.10.1+cpu torchvision==0.11.2+cpu -f https://download.pytorch.org/whl/cpu/torch_stable.html
+
+# Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
