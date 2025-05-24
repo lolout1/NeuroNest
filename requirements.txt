@@ -31,6 +31,4 @@ tensorboard
 fvcore
 pycocotools
 iopath
-
-# NATTEN for OneFormer
-natten==0.14.6
+natten==0.14.2
