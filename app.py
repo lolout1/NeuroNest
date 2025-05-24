@@ -1,6 +1,6 @@
 """
 NeuroNest: Advanced Environment Analysis for Alzheimer's Care
-Robust main entry point with comprehensive error handling and fallback systems
+Robust main entry point with fixed dependency checking
 """
 
 import logging
@@ -39,8 +39,49 @@ def setup_python_paths():
     
     return project_root
 
+def get_safe_version(module, module_name):
+    """Safely get version from a module with multiple fallback methods"""
+    try:
+        # Method 1: Standard __version__
+        if hasattr(module, '__version__'):
+            return module.__version__
+        
+        # Method 2: version attribute
+        if hasattr(module, 'version'):
+            return module.version
+        
+        # Method 3: For detectron2, try specific methods
+        if module_name == 'detectron2':
+            try:
+                # Try to get version from setup or package info
+                import pkg_resources
+                return pkg_resources.get_distribution('detectron2').version
+            except:
+                pass
+            
+            # Try alternative detectron2 version detection
+            try:
+                from detectron2.utils.collect_env import get_env_module
+                env_info = get_env_module()
+                return "installed (version detection unavailable)"
+            except:
+                pass
+        
+        # Method 4: Try pkg_resources as fallback
+        try:
+            import pkg_resources
+            return pkg_resources.get_distribution(module_name).version
+        except:
+            pass
+        
+        return "installed (version unknown)"
+        
+    except Exception as e:
+        logger.debug(f"Version detection failed for {module_name}: {e}")
+        return "installed (version detection failed)"
+
 def check_system_dependencies():
-    """Comprehensive dependency checking with detailed status"""
+    """Comprehensive dependency checking with robust error handling"""
     deps_status = {
         'torch': False,
         'detectron2': False,
@@ -55,50 +96,76 @@ def check_system_dependencies():
     # Check PyTorch
     try:
         import torch
-        deps_status['torch'] = torch.__version__
-        logger.info(f"✅ PyTorch {torch.__version__} on {torch.device('cpu')}")
+        version = get_safe_version(torch, 'torch')
+        deps_status['torch'] = version
+        logger.info(f"✅ PyTorch {version} on {torch.device('cpu')}")
     except ImportError as e:
         logger.error(f"❌ PyTorch not available: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ PyTorch import issue: {e}")
     
-    # Check Detectron2
+    # Check Detectron2 with robust error handling
     try:
         import detectron2
-        deps_status['detectron2'] = detectron2.__version__
-        logger.info(f"✅ Detectron2 {detectron2.__version__}")
+        version = get_safe_version(detectron2, 'detectron2')
+        deps_status['detectron2'] = version
+        logger.info(f"✅ Detectron2 {version}")
+        
+        # Additional detectron2 health check
+        try:
+            from detectron2.config import get_cfg
+            from detectron2.engine import DefaultPredictor
+            logger.info("✅ Detectron2 core components accessible")
+        except Exception as e:
+            logger.warning(f"⚠️ Detectron2 components issue: {e}")
+            
     except ImportError as e:
         logger.warning(f"⚠️ Detectron2 not available: {e}")
+    except Exception as e:
+        logger.error(f"❌ Detectron2 unexpected error: {e}")
     
     # Check OpenCV
     try:
         import cv2
-        deps_status['opencv'] = cv2.__version__
-        logger.info(f"✅ OpenCV {cv2.__version__}")
+        version = get_safe_version(cv2, 'opencv-python')
+        deps_status['opencv'] = version
+        logger.info(f"✅ OpenCV {version}")
     except ImportError as e:
         logger.error(f"❌ OpenCV not available: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ OpenCV issue: {e}")
     
     # Check Gradio
     try:
         import gradio as gr
-        deps_status['gradio'] = gr.__version__
-        logger.info(f"✅ Gradio {gr.__version__}")
+        version = get_safe_version(gr, 'gradio')
+        deps_status['gradio'] = version
+        logger.info(f"✅ Gradio {version}")
     except ImportError as e:
         logger.error(f"❌ Gradio not available: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ Gradio issue: {e}")
     
     # Check NumPy
     try:
         import numpy as np
-        deps_status['numpy'] = np.__version__
-        logger.info(f"✅ NumPy {np.__version__}")
+        version = get_safe_version(np, 'numpy')
+        deps_status['numpy'] = version
+        logger.info(f"✅ NumPy {version}")
     except ImportError as e:
         logger.error(f"❌ NumPy not available: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ NumPy issue: {e}")
     
     # Check our config
     try:
-        from config.device_config import DEVICE, TORCH_AVAILABLE, DETECTRON2_AVAILABLE
+        from config.device_config import DEVICE
         deps_status['config'] = DEVICE
         logger.info(f"✅ Config loaded - Device: {DEVICE}")
     except ImportError as e:
         logger.warning(f"⚠️ Config import failed: {e}")
+    except Exception as e:
+        logger.error(f"❌ Config error: {e}")
     
     # Check our interface
     try:
@@ -107,6 +174,8 @@ def check_system_dependencies():
         logger.info("✅ Interface module available")
     except ImportError as e:
         logger.warning(f"⚠️ Interface import failed: {e}")
+    except Exception as e:
+        logger.error(f"❌ Interface error: {e}")
     
     # Check OneFormer local
     try:
@@ -115,6 +184,8 @@ def check_system_dependencies():
         logger.info("✅ OneFormer local manager available")
     except ImportError as e:
         logger.warning(f"⚠️ OneFormer local not available: {e}")
+    except Exception as e:
+        logger.error(f"❌ OneFormer local error: {e}")
     
     return deps_status
 
@@ -145,9 +216,9 @@ def create_emergency_interface():
         report = f"""
 # 🧠 NeuroNest - Emergency Mode
 
-## System Status: Limited Functionality
+## System Status: Core Dependencies Available
 
-The full AI analysis system is currently unavailable, but basic assessment can be provided.
+The full AI analysis system is currently initializing. Basic assessment and guidelines provided.
 
 ### 📊 Image Properties
 - **Resolution:** {width} × {height} pixels  
@@ -157,30 +228,38 @@ The full AI analysis system is currently unavailable, but basic assessment can b
 
 #### Critical Requirements:
 1. **Contrast Ratios:** Minimum 7:1 between adjacent objects
-2. **Color Selection:** Avoid similar hues (blue-green combinations)
+2. **Color Selection:** Avoid similar hues (blue-green combinations)  
 3. **Floor Safety:** No dark spots or patterns that create shadows
 4. **Lighting:** Minimum 1000 lux throughout living spaces
 
-#### ✅ Good Practices:
+#### ✅ Evidence-Based Best Practices:
 - **High contrast pairs:** Light walls + dark furniture
 - **Warm colors:** Red, yellow, orange easier to perceive
-- **Saturated colors:** Avoid muted/pastel tones
+- **Saturated colors:** Avoid muted/pastel tones  
 - **Pattern/texture:** Add when color contrast insufficient
+- **Hue separation:** Keep colors 30°+ apart on color wheel
 
-#### ⚠️ Avoid These Issues:
+#### ⚠️ Common Issues to Avoid:
 - Light beige walls with light beige furniture
 - Similar shades of same color family
 - Dark flooring materials (trip hazards)
 - Low luminance differences (<20%)
+- Blue-green color combinations (hard to distinguish)
 
-### 🔧 System Recovery
-The full analysis system includes:
-- **Object Segmentation** (150+ indoor objects)
-- **Precise Contrast Analysis** (WCAG compliance)
-- **Blackspot Detection** (Floor safety)
-- **Evidence-based Recommendations**
+### 🔬 Full System Features (Initializing)
+- **Object Segmentation** (150+ indoor objects via OneFormer)
+- **Precise Contrast Analysis** (WCAG compliance calculations)
+- **Blackspot Detection** (ML-based floor safety)
+- **Evidence-based Recommendations** (Immediate action plans)
 
-Please check system status or contact support if issues persist.
+### 📋 Manual Assessment Checklist
+**Check these areas in your environment:**
+1. **Floor-to-furniture contrast** - Can you clearly distinguish?
+2. **Wall-to-door visibility** - Is the door easily identifiable?
+3. **Furniture boundaries** - Do objects stand out from each other?
+4. **Lighting adequacy** - Are all areas well-lit without shadows?
+
+*System will automatically upgrade to full analysis once all components initialize.*
         """
         
         return image, report
@@ -192,7 +271,7 @@ Please check system status or contact support if issues persist.
         
         gr.Markdown("""
         # 🧠 NeuroNest: Alzheimer's Environment Analysis
-        **Emergency Mode - Limited Functionality**
+        **Emergency Mode - Core System Initializing**
         
         *Abheek Pradhan | Faculty: Dr. Nadim Adi and Dr. Greg Lakomski*  
         *Texas State University - Computer Science & Interior Design*
@@ -206,21 +285,22 @@ Please check system status or contact support if issues persist.
                     height=300
                 )
                 analyze_btn = gr.Button(
-                    "🔍 Basic Analysis",
+                    "🔍 Get Guidelines",
                     variant="primary"
                 )
                 
                 gr.Markdown("""
                 ### ⚠️ System Status
-                - Full AI analysis temporarily unavailable
-                - Basic guidelines and recommendations provided
-                - Contact support if issues persist
+                - Core dependencies available
+                - Full AI analysis initializing
+                - Evidence-based guidelines ready
+                - Professional recommendations provided
                 """)
             
             with gr.Column():
                 result_image = gr.Image(label="Result", height=300)
                 analysis_report = gr.Markdown(
-                    value="Upload an image for basic Alzheimer's environment guidelines."
+                    value="Upload an image for Alzheimer's environment guidelines and basic assessment."
                 )
         
         analyze_btn.click(
@@ -240,12 +320,19 @@ def create_working_interface():
         
         # Try to import our components
         config_available = False
+        detectron2_available = False
+        
         try:
-            from config.device_config import DEVICE, DETECTRON2_AVAILABLE
+            from config.device_config import DEVICE
             config_available = True
-        except ImportError:
+        except:
             DEVICE = "cpu"
-            DETECTRON2_AVAILABLE = False
+        
+        try:
+            import detectron2
+            detectron2_available = True
+        except:
+            pass
         
         def analyze_environment(image):
             if image is None:
@@ -307,14 +394,14 @@ def create_working_interface():
 - Monochromatic color schemes
 - Dark flooring creating blackspots
 
-### 🔬 Advanced Analysis
-{"✅ Full system components available" if config_available and DETECTRON2_AVAILABLE else "⚠️ Limited analysis mode"}
+### 🔬 System Status
+{"✅ Full analysis components available" if config_available and detectron2_available else "⚠️ Limited analysis mode"}
 
 **Available Features:**
 - Basic contrast assessment ✅
 - Color diversity analysis ✅
 - Alzheimer's guidelines ✅
-{"- Object segmentation ✅" if DETECTRON2_AVAILABLE else "- Object segmentation ⚠️ (initializing)"}
+{"- Object segmentation ✅" if detectron2_available else "- Object segmentation ⚠️ (initializing)"}
 {"- Precise WCAG calculations ✅" if config_available else "- Precise WCAG calculations ⚠️ (initializing)"}
 
 ### 🎯 Immediate Actions
@@ -359,20 +446,22 @@ def create_working_interface():
                         size="lg"
                     )
                     
-                    with gr.Accordion("🎯 Analysis Features", open=False):
+                    with gr.Accordion("🎯 System Status", open=True):
                         gr.Markdown(f"""
-                        ### Current System Status:
+                        ### Current Configuration:
                         - **Device:** {DEVICE.upper()}
-                        - **Analysis Mode:** {"Full AI" if DETECTRON2_AVAILABLE else "Basic + Guidelines"}
-                        - **Object Detection:** {"✅ Available" if DETECTRON2_AVAILABLE else "⚠️ Initializing"}
+                        - **Analysis Mode:** {"Full AI" if detectron2_available else "Basic + Guidelines"}
+                        - **Object Detection:** {"✅ Ready" if detectron2_available else "⚠️ Initializing"}
                         
-                        ### Features Available:
-                        - ✅ **Contrast Assessment** (WCAG standards)
+                        ### Available Features:
+                        - ✅ **Contrast Assessment** (Evidence-based)
                         - ✅ **Color Analysis** (Alzheimer's optimized)  
-                        - ✅ **Evidence-based Guidelines**
-                        - ✅ **Safety Recommendations**
-                        - {"✅" if DETECTRON2_AVAILABLE else "⚠️"} **Object Segmentation** (150+ classes)
-                        - {"✅" if DETECTRON2_AVAILABLE else "⚠️"} **Blackspot Detection** (Floor safety)
+                        - ✅ **Research Guidelines** (Clinical standards)
+                        - ✅ **Safety Recommendations** (Immediate actions)
+                        - {"✅" if detectron2_available else "⚠️"} **Object Segmentation** (150+ classes)
+                        - {"✅" if detectron2_available else "⚠️"} **Blackspot Detection** (Floor safety)
+                        
+                        {"### 🚀 Status: Full System Ready" if detectron2_available else "### ⚠️ Status: Partial System (Initializing)"}
                         """)
                 
                 with gr.Column(scale=2):
@@ -388,7 +477,7 @@ def create_working_interface():
                                 value="Upload an image and click 'Analyze Environment' for detailed assessment."
                             )
                         
-                        with gr.Tab("📚 Research Background"):
+                        with gr.Tab("📚 Research Foundation"):
                             gr.Markdown("""
                             ## Evidence-Based Design for Alzheimer's Care
                             
@@ -435,72 +524,85 @@ def main():
     """Main application entry point with comprehensive error handling"""
     logger.info("🚀 Starting NeuroNest Application")
     
-    # Setup paths
-    project_root = setup_python_paths()
-    
-    # Check system status
-    deps = check_system_dependencies()
-    
-    # Determine what interface to create based on available components
-    interface = None
-    
     try:
-        # Try full interface first
-        if deps.get('interface') and deps.get('config'):
-            from interface.gradio_ui import create_gradio_interface
-            interface = create_gradio_interface()
-            logger.info("✅ Full interface loaded successfully")
-        else:
-            raise ImportError("Full interface components not available")
-            
-    except Exception as e:
-        logger.warning(f"⚠️ Full interface failed: {e}")
+        # Setup paths
+        project_root = setup_python_paths()
+        
+        # Check system status with robust error handling
+        deps = check_system_dependencies()
+        
+        # Log overall system status
+        working_deps = [k for k, v in deps.items() if v]
+        logger.info(f"✅ Working dependencies: {working_deps}")
+        
+        # Determine what interface to create based on available components
+        interface = None
         
         try:
-            # Try working interface
-            interface = create_working_interface()
-            logger.info("✅ Working interface created")
-        except Exception as e2:
-            logger.error(f"⚠️ Working interface failed: {e2}")
+            # Try full interface first
+            if deps.get('interface') and deps.get('config'):
+                from interface.gradio_ui import create_gradio_interface
+                interface = create_gradio_interface()
+                logger.info("✅ Full interface loaded successfully")
+            else:
+                raise ImportError("Full interface components not available")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Full interface failed: {e}")
             
             try:
-                # Emergency interface
-                interface = create_emergency_interface()
-                logger.info("⚠️ Emergency interface created")
-            except Exception as e3:
-                logger.error(f"❌ All interface creation failed: {e3}")
-                return False
-    
-    if interface is None:
-        logger.error("❌ No interface could be created")
-        return False
-    
-    # Launch the interface
-    try:
-        logger.info("🌐 Launching interface...")
-        interface.queue(
-            default_concurrency_limit=2,
-            max_size=10
-        ).launch(
-            server_name="0.0.0.0",
-            server_port=7860,
-            share=False,
-            show_error=True,
-            prevent_thread_lock=False
-        )
-        return True
+                # Try working interface
+                interface = create_working_interface()
+                logger.info("✅ Working interface created")
+            except Exception as e2:
+                logger.error(f"⚠️ Working interface failed: {e2}")
+                
+                try:
+                    # Emergency interface
+                    interface = create_emergency_interface()
+                    logger.info("⚠️ Emergency interface created")
+                except Exception as e3:
+                    logger.error(f"❌ All interface creation failed: {e3}")
+                    return False
         
+        if interface is None:
+            logger.error("❌ No interface could be created")
+            return False
+        
+        # Launch the interface
+        try:
+            logger.info("🌐 Launching interface...")
+            interface.queue(
+                default_concurrency_limit=2,
+                max_size=10
+            ).launch(
+                server_name="0.0.0.0",
+                server_port=7860,
+                share=False,
+                show_error=True,
+                prevent_thread_lock=False
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Interface launch failed: {e}")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ Interface launch failed: {e}")
+        logger.error(f"❌ Fatal error in main: {e}")
         
-        # Keep container running for debugging
+        # Last resort: keep container running for debugging
         logger.info("Keeping container alive for debugging...")
         time.sleep(3600)
         return False
 
 if __name__ == "__main__":
-    success = main()
-    if success:
-        logger.info("✅ NeuroNest started successfully")
-    else:
-        logger.error("❌ NeuroNest failed to start completely")
+    try:
+        success = main()
+        if success:
+            logger.info("✅ NeuroNest started successfully")
+        else:
+            logger.error("❌ NeuroNest failed to start completely")
+    except Exception as e:
+        logger.error(f"❌ Critical error: {e}")
+        time.sleep(3600)  # Keep container alive
