@@ -34,11 +34,13 @@ RUN pip install --no-cache-dir \
     scikit-learn==1.3.2 \
     scikit-image==0.21.0
 
-# Copy application files FIRST
+# Copy application files FIRST (including local detectron2)
 COPY . .
 
-# Install local Detectron2 (from copied detectron2/ directory)
-RUN cd detectron2 && pip install -e .
+# Install local Detectron2 BEFORE other dependencies
+RUN cd detectron2 && \
+    python -m pip install -e . && \
+    cd ..
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir \
