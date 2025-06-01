@@ -45,8 +45,7 @@ ENV FORCE_CUDA="0"
 ENV TORCH_CUDA_ARCH_LIST=""
 
 # Copy and install requirements
-COPY --chown=user:user requirements-no-torch.txt requirements.txt
-RUN pip install --user --no-cache-dir -r requirements-no-torch.txt
+RUN pip install --user --no-cache-dir -r requirements.txt
 
 # Copy app files
 COPY --chown=user:user . .
