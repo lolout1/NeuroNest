@@ -1,0 +1,17 @@
+*.out
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+slurm-*.out
+output_*/
+build/
+dist/
+*.egg-info/
+.env
+.claude/
+oneformer/modeling/pixel_decoder/ops/build/
+oneformer/modeling/pixel_decoder/ops/dist/
+oneformer/modeling/pixel_decoder/ops/*.egg-info/
+output_floor_blackspot/
+environment.yml
