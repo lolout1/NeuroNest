@@ -2,9 +2,9 @@
 # Don't include detectron2 since it's installed separately in Dockerfile
 
 # Core dependencies
-gradio==4.19.2
+gradio
 numpy
-opencv-python-headless==4.8.1.78  # Use headless version for Docker
+opencv-python-headless
 pillow
 matplotlib
 scipy
