@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
 """
-Hugging Face Spaces entry point for OneFormer application
+Minimal OneFormer Demo for HuggingFace Spaces
 """
 
 import os
-import sys
-import subprocess
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
-# Set up environment variables for HF Spaces
-os.environ['CUDA_HOME'] = '/usr/local/cuda' if os.path.exists('/usr/local/cuda') else ''
+import gradio as gr
+import torch
+import numpy as np
+from PIL import Image
 
-# Install deformable attention ops if not already installed
-def setup_deformable_attention():
-    ops_dir = os.path.join(os.path.dirname(__file__), 'oneformer/modeling/pixel_decoder/ops')
-    if os.path.exists(ops_dir):
-        try:
-            subprocess.run(['bash', 'deform_setup.sh'], check=True, cwd=os.path.dirname(__file__))
-            print("Deformable attention ops installed successfully")
-        except Exception as e:
-            print(f"Warning: Could not install deformable attention ops: {e}")
-            print("Continuing without custom CUDA kernels...")
+# Force CPU
+device = torch.device("cpu")
 
-# Run setup on first launch
-if not os.path.exists('oneformer/modeling/pixel_decoder/ops/build'):
-    setup_deformable_attention()
+def process_image(image):
+    """Simple image processing function"""
+    if image is None:
+        return None
+    
+    # For now, just return the image with a message
+    # Replace this with actual OneFormer inference
+    return image
 
-# Import and run the main gradio app
-from gradio_test import demo
+# Create simple interface
+iface = gr.Interface(
+    fn=process_image,
+    inputs=gr.Image(type="numpy"),
+    outputs=gr.Image(type="numpy"),
+    title="OneFormer Demo",
+    description="OneFormer: Universal Image Segmentation (CPU Mode)",
+)
 
 if __name__ == "__main__":
-    # Launch with HF Spaces compatible settings
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,  # Disabled on HF Spaces
-        debug=False
-    )
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"Running on: CPU")
+    iface.launch(server_name="0.0.0.0", server_port=7860)
