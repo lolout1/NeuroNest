@@ -12,8 +12,8 @@ timm
 einops
 
 # natten with correct torch version
-natten==0.14.6+torch200cpu -f https://shi-labs.com/natten/wheels/cpu/torch2.0.0/index.html
-
+-f https://shi-labs.com/natten/wheels/cpu/torch2.0.0/index.html
+natten==0.14.6
 # Additional dependencies
 diffdist
 pytest
