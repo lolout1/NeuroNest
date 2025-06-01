@@ -1,13 +1,5 @@
---extra-index-url https://download.pytorch.org/whl/cpu
 
-# Core dependencies - PyTorch first
-torch==2.0.1+cpu
-torchvision==0.15.2+cpu
-torchaudio==2.0.2+cpu
 
-# CORRECT: Use detectron2 wheel for torch 2.0 CPU (not 1.10)
---find-links https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
-detectron2==0.6
 
 # Rest of your dependencies
 numpy>=1.23.0
