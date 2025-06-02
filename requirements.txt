@@ -58,6 +58,6 @@ pytorch_lightning==1.8.6
 
 # Web interface
 gradio==3.16.2
-
+sklearn
 # Job submission
 submitit==1.4.5
