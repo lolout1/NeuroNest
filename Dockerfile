@@ -22,39 +22,47 @@ RUN useradd -m -u 1000 user
 
 WORKDIR /app
 
-# Upgrade pip
-RUN pip install --upgrade pip setuptools wheel
+# CRITICAL: Downgrade setuptools to avoid the deprecated warnings
+RUN pip install --upgrade pip
+RUN pip install setuptools==69.5.1 wheel
 
-# Install PyTorch and dependencies in the correct order
-RUN pip install sympy filelock jinja2 networkx requests typing-extensions
+# Install PyTorch and core dependencies
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
+RUN pip install numpy==1.24.3 pillow==10.0.0
 
-# Force specific numpy/pillow versions AFTER torch installation
-RUN pip uninstall -y numpy pillow && \
-    pip install numpy==1.24.3 pillow==10.0.0
+# Install COCO API first (required by detectron2)
+RUN pip install pycocotools opencv-python
 
-# Install COCO API and other dependencies needed by detectron2
-RUN pip install pycocotools opencv-python scipy matplotlib
-
-# Clone and install detectron2 from source
+# Method 1: Install detectron2 without editable mode and without build isolation
 RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
     cd /tmp/detectron2 && \
     git checkout v0.6 && \
-    pip install -e .
+    pip install --no-build-isolation --no-deps . && \
+    pip install -r requirements.txt
 
-# Install additional dependencies
+# Alternative Method 2: Build wheel first
+# RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
+#     cd /tmp/detectron2 && \
+#     git checkout v0.6 && \
+#     python setup.py bdist_wheel && \
+#     pip install dist/*.whl && \
+#     pip install -r requirements.txt
+
+# Install other dependencies
 RUN pip install \
     gradio \
     huggingface_hub \
+    scipy \
     scikit-learn \
     scikit-image \
+    matplotlib \
     tqdm
 
 # Switch to user
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
-# Copy application files
+# Copy application
 COPY --chown=user:user . /app
 
 # Install remaining requirements as user
