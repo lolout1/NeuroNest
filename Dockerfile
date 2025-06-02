@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.8-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -15,52 +15,58 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     ninja-build \
+    gcc-8 \
+    g++-8 \
     && rm -rf /var/lib/apt/lists/*
+
+# Set gcc-8 as default (better compatibility with detectron2)
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 800 --slave /usr/bin/g++ g++ /usr/bin/g++-8
 
 # Create user
 RUN useradd -m -u 1000 user
 
 WORKDIR /app
 
-# Install Python packages
-RUN pip install --upgrade pip setuptools wheel
+# Upgrade pip to a compatible version
+RUN pip install --upgrade "pip<24.1" setuptools wheel
 
-# Install PyTorch FIRST
-RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch for Python 3.8
+RUN pip install torch==1.13.1+cpu torchvision==0.14.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
 
-# Install numpy and pillow with specific versions
-RUN pip install numpy==1.24.3 pillow==9.5.0
+# Install compatible numpy and pillow
+RUN pip install numpy==1.21.6 pillow==9.5.0
 
 # Install detectron2 dependencies
 RUN pip install \
+    cython \
     pycocotools \
-    opencv-python==4.8.1.78 \
-    scipy==1.10.1 \
-    matplotlib==3.7.2 \
-    iopath==0.1.9 \
-    omegaconf \
-    hydra-core \
+    opencv-python==4.5.5.64 \
+    scipy==1.7.3 \
+    matplotlib==3.5.3 \
     cloudpickle \
     tabulate \
     tensorboard \
     yacs \
     termcolor \
     future \
-    fvcore
+    fvcore \
+    iopath==0.1.9 \
+    omegaconf==2.1.2 \
+    hydra-core==1.1.2
 
-# Clone and install detectron2 with --no-build-isolation
+# Install detectron2 from source with Python 3.8 compatibility
 RUN git clone https://github.com/facebookresearch/detectron2.git && \
     cd detectron2 && \
     git checkout v0.6 && \
-    pip install --no-build-isolation -e . && \
+    python -m pip install -e . && \
     cd ..
 
-# Install other dependencies
+# Install additional dependencies
 RUN pip install \
-    scikit-learn==1.3.0 \
-    scikit-image==0.21.0 \
-    gradio==3.50.2 \
-    huggingface_hub==0.19.4 \
+    scikit-learn==1.0.2 \
+    scikit-image==0.19.3 \
+    gradio==3.35.2 \
+    huggingface_hub==0.15.1 \
     tqdm
 
 # Switch to user
@@ -78,6 +84,10 @@ RUN pip install --user --no-deps -r /app/requirements.txt || true
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV TORCH_CUDA_ARCH_LIST=""
+ENV PYTHONUNBUFFERED=1
+
+# Create necessary directories
+RUN mkdir -p /home/user/.cache
 
 EXPOSE 7860
 CMD ["python", "app.py"]
