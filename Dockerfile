@@ -14,39 +14,40 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     wget \
     curl \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Create user (required by Hugging Face)
+# Create user
 RUN useradd -m -u 1000 user
 
-# Set working directory
 WORKDIR /app
 
-# Install Python dependencies in the correct order
-# First, upgrade pip and install essential tools
+# Upgrade pip
 RUN pip install --upgrade pip setuptools wheel
 
-# Install PyTorch dependencies FIRST
+# Install PyTorch and dependencies in the correct order
 RUN pip install sympy filelock jinja2 networkx requests typing-extensions
-
-# Install PyTorch CPU version WITH dependencies
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# Install numpy and pillow (specific versions for compatibility)
-RUN pip install numpy==1.24.3 pillow==10.0.0
+# Force specific numpy/pillow versions AFTER torch installation
+RUN pip uninstall -y numpy pillow && \
+    pip install numpy==1.24.3 pillow==10.0.0
 
-# Install detectron2 from pre-built wheel (much more reliable than building from source)
-RUN pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
+# Install COCO API and other dependencies needed by detectron2
+RUN pip install pycocotools opencv-python scipy matplotlib
 
-# Install other core dependencies
+# Clone and install detectron2 from source
+RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
+    cd /tmp/detectron2 && \
+    git checkout v0.6 && \
+    pip install -e .
+
+# Install additional dependencies
 RUN pip install \
-    opencv-python \
-    scipy \
-    scikit-learn \
-    scikit-image \
-    matplotlib \
     gradio \
     huggingface_hub \
+    scikit-learn \
+    scikit-image \
     tqdm
 
 # Switch to user
@@ -54,18 +55,16 @@ USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
 # Copy application files
-COPY --chown=user:user requirements.txt /app/requirements.txt
-RUN pip install --user -r /app/requirements.txt
-
 COPY --chown=user:user . /app
 
-# Set environment for CPU
+# Install remaining requirements as user
+COPY --chown=user:user requirements.txt /app/
+RUN pip install --user --no-deps -r requirements.txt || true
+
+# Environment variables
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV TORCH_CUDA_ARCH_LIST=""
 
-# Expose port
 EXPOSE 7860
-
-# Run the application
-CMD ["python", "gradio_test.py"]
+CMD ["python", "app.py"]
