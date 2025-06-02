@@ -59,7 +59,7 @@ RUN pip install --no-cache-dir \
     inflect==6.0.4 \
     gdown==4.5.4 \
     wget==3.2 \
-    huggingface_hub==0.14.8 \
+    huggingface_hub==0.15.0 \
     pytorch_lightning==1.8.6 \
     gradio==3.35.2 \
     diffdist \
