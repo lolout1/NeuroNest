@@ -12,62 +12,60 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libgomp1 \
     libgl1-mesa-glx \
-    libgtk2.0-dev \
     wget \
     curl \
-    unzip \
-    ffmpeg \
-    libopencv-dev \
-    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Create user
+# Create user (required by Hugging Face)
 RUN useradd -m -u 1000 user
 
-# Install Python dependencies in correct order
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies in the correct order
+# First, upgrade pip and install essential tools
 RUN pip install --upgrade pip setuptools wheel
 
-# Install sympy FIRST (required by torch)
-RUN pip install sympy
+# Install PyTorch dependencies FIRST
+RUN pip install sympy filelock jinja2 networkx requests typing-extensions
 
-# Install PyTorch CPU version
+# Install PyTorch CPU version WITH dependencies
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# Install detectron2 from pre-built wheel (more reliable)
+# Install numpy and pillow (specific versions for compatibility)
+RUN pip install numpy==1.24.3 pillow==10.0.0
+
+# Install detectron2 from pre-built wheel (much more reliable than building from source)
 RUN pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
 
-# Install other dependencies
+# Install other core dependencies
 RUN pip install \
-    numpy>=1.23.0,<2.0.0 \
     opencv-python \
     scipy \
     scikit-learn \
+    scikit-image \
+    matplotlib \
     gradio \
-    huggingface_hub
+    huggingface_hub \
+    tqdm
 
 # Switch to user
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
-WORKDIR $HOME/app
+
+# Copy application files
+COPY --chown=user:user requirements.txt /app/requirements.txt
+RUN pip install --user -r /app/requirements.txt
+
+COPY --chown=user:user . /app
 
 # Set environment for CPU
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV TORCH_CUDA_ARCH_LIST=""
 
-# Copy requirements and install remaining dependencies
-COPY --chown=user:user requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
-
-# Copy app files
-COPY --chown=user:user . .
-
-# Clone and setup OneFormer if needed
-RUN if [ ! -d "oneformer" ]; then \
-    git clone https://github.com/SHI-Labs/OneFormer.git oneformer && \
-    cd oneformer && \
-    pip install --user -e . ; \
-    fi
-
+# Expose port
 EXPOSE 7860
+
+# Run the application
 CMD ["python", "gradio_test.py"]
