@@ -57,7 +57,7 @@ huggingface_hub==0.11.1
 pytorch_lightning==1.8.6
 
 # Web interface
-gradio==3.16.2
+gradio==3.35.2
 scikit-learn
 diffdist
 gdown
