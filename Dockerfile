@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Install system dependencies
+# Install system dependencies including those needed for building detectron2
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     wget \
     curl \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 # Create user (required by Hugging Face)
@@ -31,23 +32,42 @@ RUN pip install sympy filelock jinja2 networkx requests typing-extensions
 # Install PyTorch CPU version
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# CRITICAL FIX: Install compatible Pillow version
+# Install compatible versions of numpy and pillow
 RUN pip install numpy==1.24.3 pillow==9.5.0
 
-# Install detectron2 from pre-built wheel
-RUN pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
-
-# Install other core dependencies
+# Install detectron2 dependencies first
 RUN pip install \
+    pycocotools \
     opencv-python==4.8.1.78 \
     scipy==1.10.1 \
     scikit-learn==1.3.0 \
     scikit-image==0.21.0 \
     matplotlib==3.7.2 \
-    gradio==3.50.2 \
-    huggingface_hub==0.19.4 \
     tqdm \
-    pycocotools
+    cloudpickle \
+    tabulate \
+    tensorboard \
+    packaging \
+    Pillow==9.5.0 \
+    pycocotools \
+    matplotlib \
+    iopath \
+    omegaconf \
+    hydra-core \
+    black
+
+# Build and install detectron2 from source (more reliable)
+RUN git clone https://github.com/facebookresearch/detectron2.git && \
+    cd detectron2 && \
+    git checkout v0.6 && \
+    pip install -e . && \
+    cd .. && \
+    rm -rf detectron2/.git
+
+# Install other core dependencies
+RUN pip install \
+    gradio==3.50.2 \
+    huggingface_hub==0.19.4
 
 # Switch to user
 USER user
@@ -55,7 +75,9 @@ ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
 # Copy application files
 COPY --chown=user:user requirements.txt /app/requirements.txt
-RUN pip install --user -r /app/requirements.txt
+
+# Install remaining requirements
+RUN pip install --user --no-deps -r /app/requirements.txt || true
 
 COPY --chown=user:user . /app
 
