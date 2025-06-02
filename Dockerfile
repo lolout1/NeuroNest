@@ -14,74 +14,64 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     wget \
     curl \
-    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Create user for Hugging Face
+# Create user (required by Hugging Face)
 RUN useradd -m -u 1000 user
 
+# Set working directory
 WORKDIR /app
 
-# Upgrade pip and install setuptools
-RUN pip install --upgrade pip
-RUN pip install setuptools==69.5.1 wheel
+# Install Python dependencies in the correct order
+RUN pip install --upgrade pip setuptools wheel
 
-# Install PyTorch and dependencies
+# Install PyTorch dependencies FIRST
+RUN pip install sympy filelock jinja2 networkx requests typing-extensions
+
+# Install PyTorch CPU version
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# Force specific numpy/pillow versions
-RUN pip install numpy==1.24.3 pillow==10.0.0
+# CRITICAL FIX: Install compatible Pillow version
+RUN pip install numpy==1.24.3 pillow==9.5.0
 
-# Install COCO API and OpenCV
-RUN pip install pycocotools opencv-python
+# Install detectron2 from pre-built wheel
+RUN pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch2.0/index.html
 
-# Install detectron2 - FIXED VERSION
-RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
-    cd /tmp/detectron2 && \
-    git checkout v0.6 && \
-    pip install --no-build-isolation --no-deps . && \
-    cd / && \
-    rm -rf /tmp/detectron2
-
-# Install detectron2 dependencies manually (since v0.6 has no requirements.txt)
+# Install other core dependencies
 RUN pip install \
-    fvcore \
-    iopath \
-    omegaconf \
-    hydra-core \
-    black \
-    pyyaml \
-    matplotlib \
+    opencv-python==4.8.1.78 \
+    scipy==1.10.1 \
+    scikit-learn==1.3.0 \
+    scikit-image==0.21.0 \
+    matplotlib==3.7.2 \
+    gradio==3.50.2 \
+    huggingface_hub==0.19.4 \
     tqdm \
-    termcolor \
-    yacs \
-    tabulate \
-    cloudpickle \
-    Pillow \
-    scipy
-
-# Install additional dependencies
-RUN pip install \
-    gradio \
-    huggingface_hub \
-    scikit-learn \
-    scikit-image
+    pycocotools
 
 # Switch to user
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
 # Copy application files
+COPY --chown=user:user requirements.txt /app/requirements.txt
+RUN pip install --user -r /app/requirements.txt
+
 COPY --chown=user:user . /app
 
-# Install any remaining user requirements
-COPY --chown=user:user requirements.txt /app/
-RUN pip install --user --no-deps -r requirements.txt || true
-
-# Environment variables
+# Set environment for CPU
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV TORCH_CUDA_ARCH_LIST=""
 
+# Create necessary directories
+RUN mkdir -p /app/oneformer && \
+    mkdir -p /app/utils && \
+    mkdir -p /app/configs && \
+    mkdir -p /app/demo
+
+# Expose port
 EXPOSE 7860
+
+# Run the application
 CMD ["python", "app.py"]

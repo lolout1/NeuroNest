@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple, Optional
 import logging
 from scipy.spatial import distance
 from skimage.segmentation import find_boundaries
+from sklearn.cluster import DBSCAN
+import colorsys
 
 logger = logging.getLogger(__name__)
 
@@ -22,40 +24,53 @@ class UniversalContrastAnalyzer:
     def __init__(self, wcag_threshold: float = 4.5):
         self.wcag_threshold = wcag_threshold
         
-        # ADE20K semantic class mappings
+        # Comprehensive ADE20K semantic class mappings
         self.semantic_classes = {
             # Floors and ground surfaces
             'floor': [3, 4, 13, 28, 78],  # floor, wood floor, rug, carpet, mat
             
             # Walls and vertical surfaces
-            'wall': [0, 1, 9],  # wall, building, brick
+            'wall': [0, 1, 9, 21],  # wall, building, brick, house
             
             # Ceiling
-            'ceiling': [5],
+            'ceiling': [5, 16],  # ceiling, sky (for rooms with skylights)
             
-            # Furniture
-            'furniture': [10, 19, 15, 7, 18, 23, 30, 33, 34, 36, 44, 45, 57, 63, 64, 65, 75],
-            # sofa, chair, table, bed, armchair, cabinet, desk, counter, stool, bench, nightstand, 
-            # coffee table, ottoman, wardrobe, dresser, shelf, chest of drawers
+            # Furniture - expanded list
+            'furniture': [
+                10, 19, 15, 7, 18, 23, 30, 33, 34, 36, 44, 45, 57, 63, 64, 65, 75,
+                # sofa, chair, table, bed, armchair, cabinet, desk, counter, stool, 
+                # bench, nightstand, coffee table, ottoman, wardrobe, dresser, shelf, 
+                # chest of drawers
+            ],
             
             # Doors and openings
-            'door': [25, 14],  # door, windowpane
+            'door': [25, 14, 79],  # door, windowpane, screen door
             
             # Windows
-            'window': [8],
+            'window': [8, 14],  # window, windowpane
             
             # Stairs and steps
             'stairs': [53, 59],  # stairs, step
             
             # Small objects that might be on floors/furniture
-            'objects': [17, 20, 24, 37, 38, 39, 42, 62, 68, 71, 73, 80, 82, 84, 89, 90, 92, 93],
-            # curtain, book, picture, towel, clothes, pillow, box, bag, lamp, fan, cushion,
-            # basket, bottle, plate, clock, vase, tray, bowl
+            'objects': [
+                17, 20, 24, 37, 38, 39, 42, 62, 68, 71, 73, 80, 82, 84, 89, 90, 92, 93,
+                # curtain, book, picture, towel, clothes, pillow, box, bag, lamp, fan, 
+                # cushion, basket, bottle, plate, clock, vase, tray, bowl
+            ],
             
             # Kitchen/bathroom fixtures
-            'fixtures': [32, 46, 49, 50, 54, 66, 69, 70, 77, 94, 97, 98, 99, 117, 118, 119, 120],
-            # sink, toilet, bathtub, shower, dishwasher, oven, microwave, refrigerator,
-            # stove, washer, dryer, range hood, kitchen island
+            'fixtures': [
+                32, 46, 49, 50, 54, 66, 69, 70, 77, 94, 97, 98, 99, 117, 118, 119, 120,
+                # sink, toilet, bathtub, shower, dishwasher, oven, microwave, 
+                # refrigerator, stove, washer, dryer, range hood, kitchen island
+            ],
+            
+            # Decorative elements
+            'decorative': [
+                6, 12, 56, 60, 61, 72, 83, 91, 96, 100, 102, 104, 106, 110, 112,
+                # painting, mirror, sculpture, chandelier, sconce, poster, tapestry
+            ]
         }
         
         # Create reverse mapping for quick lookup
@@ -70,7 +85,7 @@ class UniversalContrastAnalyzer:
             # Normalize to 0-1
             rgb_norm = rgb / 255.0
             
-            # Apply gamma correction
+            # Apply gamma correction (linearize)
             rgb_linear = np.where(
                 rgb_norm <= 0.03928,
                 rgb_norm / 12.92,
@@ -95,7 +110,7 @@ class UniversalContrastAnalyzer:
         hsv1 = cv2.cvtColor(color1.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
         hsv2 = cv2.cvtColor(color2.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
         
-        # Calculate circular hue difference
+        # Calculate circular hue difference (0-180 range in OpenCV)
         hue_diff = abs(hsv1[0] - hsv2[0])
         if hue_diff > 90:
             hue_diff = 180 - hue_diff
@@ -125,10 +140,23 @@ class UniversalContrastAnalyzer:
             indices = np.random.choice(len(masked_pixels), sample_size, replace=False)
             masked_pixels = masked_pixels[indices]
         
-        # Use median for robustness against outliers
-        dominant_color = np.median(masked_pixels, axis=0).astype(int)
+        # Use DBSCAN clustering to find dominant color cluster
+        if len(masked_pixels) > 50:
+            try:
+                clustering = DBSCAN(eps=30, min_samples=10).fit(masked_pixels)
+                labels = clustering.labels_
+                
+                # Get the largest cluster
+                unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
+                if len(unique_labels) > 0:
+                    dominant_label = unique_labels[np.argmax(counts)]
+                    dominant_colors = masked_pixels[labels == dominant_label]
+                    return np.median(dominant_colors, axis=0).astype(int)
+            except:
+                pass
         
-        return dominant_color
+        # Fallback to median
+        return np.median(masked_pixels, axis=0).astype(int)
     
     def find_adjacent_segments(self, segmentation: np.ndarray) -> Dict[Tuple[int, int], np.ndarray]:
         """
@@ -147,12 +175,16 @@ class UniversalContrastAnalyzer:
                 if boundaries[y, x]:
                     center_id = segmentation[y, x]
                     
-                    # Check 4-connected neighbors
+                    # Check 8-connected neighbors for more complete boundaries
                     neighbors = [
-                        segmentation[y-1, x],  # top
-                        segmentation[y+1, x],  # bottom
-                        segmentation[y, x-1],  # left
-                        segmentation[y, x+1]   # right
+                        segmentation[y-1, x],    # top
+                        segmentation[y+1, x],    # bottom
+                        segmentation[y, x-1],    # left
+                        segmentation[y, x+1],    # right
+                        segmentation[y-1, x-1],  # top-left
+                        segmentation[y-1, x+1],  # top-right
+                        segmentation[y+1, x-1],  # bottom-left
+                        segmentation[y+1, x+1]   # bottom-right
                     ]
                     
                     for neighbor_id in neighbors:
@@ -166,7 +198,7 @@ class UniversalContrastAnalyzer:
                             adjacencies[pair][y, x] = True
         
         # Filter out small boundaries (noise)
-        min_boundary_pixels = 10
+        min_boundary_pixels = 20  # Reduced threshold for better detection
         filtered_adjacencies = {}
         for pair, boundary in adjacencies.items():
             if np.sum(boundary) >= min_boundary_pixels:
@@ -174,35 +206,57 @@ class UniversalContrastAnalyzer:
         
         return filtered_adjacencies
     
-    def is_object_on_surface(self, obj_mask: np.ndarray, surface_mask: np.ndarray, 
-                           min_contact_ratio: float = 0.1) -> bool:
+    def is_contrast_sufficient(self, color1: np.ndarray, color2: np.ndarray, 
+                             category1: str, category2: str) -> Tuple[bool, str]:
         """
-        Determine if an object is resting on a surface (e.g., object on floor).
-        Uses vertical proximity and overlap analysis.
+        Determine if contrast is sufficient based on WCAG and perceptual guidelines.
+        Returns (is_sufficient, severity_if_not)
         """
-        if not np.any(obj_mask) or not np.any(surface_mask):
-            return False
+        wcag_ratio = self.calculate_wcag_contrast(color1, color2)
+        hue_diff = self.calculate_hue_difference(color1, color2)
+        sat_diff = self.calculate_saturation_difference(color1, color2)
         
-        # Find bottom edge of object
-        obj_coords = np.where(obj_mask)
-        if len(obj_coords[0]) == 0:
-            return False
-            
-        obj_bottom_y = np.max(obj_coords[0])
-        obj_bottom_mask = obj_mask.copy()
-        obj_bottom_mask[:obj_bottom_y-5, :] = False  # Keep only bottom 5 pixels
+        # Critical relationships requiring highest contrast
+        critical_pairs = [
+            ('floor', 'stairs'),
+            ('floor', 'door'),
+            ('stairs', 'wall')
+        ]
         
-        # Check for overlap with surface in the bottom region
-        overlap = obj_bottom_mask & surface_mask
+        # High priority relationships
+        high_priority_pairs = [
+            ('floor', 'furniture'),
+            ('wall', 'door'),
+            ('wall', 'furniture'),
+            ('floor', 'objects')
+        ]
         
-        # Calculate contact ratio
-        obj_bottom_pixels = np.sum(obj_bottom_mask)
-        if obj_bottom_pixels == 0:
-            return False
-            
-        contact_ratio = np.sum(overlap) / obj_bottom_pixels
+        # Check relationship type
+        relationship = tuple(sorted([category1, category2]))
         
-        return contact_ratio >= min_contact_ratio
+        # Determine thresholds based on relationship
+        if relationship in critical_pairs:
+            # Critical: require 7:1 contrast ratio
+            if wcag_ratio < 7.0:
+                return False, 'critical'
+            if hue_diff < 30 and sat_diff < 50:
+                return False, 'critical'
+                
+        elif relationship in high_priority_pairs:
+            # High priority: require 4.5:1 contrast ratio
+            if wcag_ratio < 4.5:
+                return False, 'high'
+            if wcag_ratio < 7.0 and hue_diff < 20 and sat_diff < 40:
+                return False, 'high'
+                
+        else:
+            # Standard: require 3:1 contrast ratio minimum
+            if wcag_ratio < 3.0:
+                return False, 'medium'
+            if wcag_ratio < 4.5 and hue_diff < 15 and sat_diff < 30:
+                return False, 'medium'
+        
+        return True, None
     
     def analyze_contrast(self, image: np.ndarray, segmentation: np.ndarray) -> Dict:
         """
@@ -224,6 +278,8 @@ class UniversalContrastAnalyzer:
                 'analyzed_pairs': 0,
                 'low_contrast_pairs': 0,
                 'critical_issues': 0,
+                'high_priority_issues': 0,
+                'medium_priority_issues': 0,
                 'floor_object_issues': 0
             }
         }
@@ -235,11 +291,14 @@ class UniversalContrastAnalyzer:
         
         # Build segment information
         segment_info = {}
-        floor_segments = []
+        
+        logger.info(f"Building segment information for {len(unique_segments)} segments...")
         
         for seg_id in unique_segments:
             mask = segmentation == seg_id
-            if np.sum(mask) < 50:  # Skip very small segments
+            area = np.sum(mask)
+            
+            if area < 50:  # Skip very small segments
                 continue
             
             category = self.class_to_category.get(seg_id, 'unknown')
@@ -249,16 +308,14 @@ class UniversalContrastAnalyzer:
                 'category': category,
                 'mask': mask,
                 'color': color,
-                'area': np.sum(mask),
+                'area': area,
                 'class_id': seg_id
             }
-            
-            # Track floor segments
-            if category == 'floor':
-                floor_segments.append(seg_id)
         
         # Find all adjacent segment pairs
+        logger.info("Finding adjacent segments...")
         adjacencies = self.find_adjacent_segments(segmentation)
+        logger.info(f"Found {len(adjacencies)} adjacent segment pairs")
         
         # Analyze each adjacent pair
         for (seg1_id, seg2_id), boundary in adjacencies.items():
@@ -268,63 +325,52 @@ class UniversalContrastAnalyzer:
             info1 = segment_info[seg1_id]
             info2 = segment_info[seg2_id]
             
+            # Skip if both are unknown categories
+            if info1['category'] == 'unknown' and info2['category'] == 'unknown':
+                continue
+            
             results['statistics']['analyzed_pairs'] += 1
             
-            # Calculate all contrast metrics
-            wcag_ratio = self.calculate_wcag_contrast(info1['color'], info2['color'])
-            hue_diff = self.calculate_hue_difference(info1['color'], info2['color'])
-            sat_diff = self.calculate_saturation_difference(info1['color'], info2['color'])
+            # Check contrast sufficiency
+            is_sufficient, severity = self.is_contrast_sufficient(
+                info1['color'], info2['color'], 
+                info1['category'], info2['category']
+            )
             
-            # Determine if there's insufficient contrast
-            has_issue = False
-            severity = 'low'
-            
-            # Check WCAG contrast
-            if wcag_ratio < self.wcag_threshold:
-                has_issue = True
-                if wcag_ratio < 3.0:
-                    severity = 'critical'
-                elif wcag_ratio < 4.0:
-                    severity = 'high'
-                else:
-                    severity = 'medium'
-            
-            # Additional checks for very similar colors
-            if hue_diff < 30 and sat_diff < 50 and wcag_ratio < 7.0:
-                has_issue = True
-                if severity == 'low':
-                    severity = 'medium'
-            
-            if has_issue:
+            if not is_sufficient:
                 results['statistics']['low_contrast_pairs'] += 1
                 
-                # Determine relationship type
-                is_floor_object = False
-                if info1['category'] == 'floor' or info2['category'] == 'floor':
-                    # Check if non-floor object is on the floor
-                    if info1['category'] == 'floor':
-                        floor_info, obj_info = info1, info2
-                    else:
-                        floor_info, obj_info = info2, info1
-                    
-                    if self.is_object_on_surface(obj_info['mask'], floor_info['mask']):
-                        is_floor_object = True
-                        results['statistics']['floor_object_issues'] += 1
-                        if severity != 'critical':
-                            severity = 'high'  # Elevate floor-object issues
+                # Calculate detailed metrics
+                wcag_ratio = self.calculate_wcag_contrast(info1['color'], info2['color'])
+                hue_diff = self.calculate_hue_difference(info1['color'], info2['color'])
+                sat_diff = self.calculate_saturation_difference(info1['color'], info2['color'])
                 
+                # Check if it's a floor-object issue
+                is_floor_object = (
+                    (info1['category'] == 'floor' and info2['category'] in ['furniture', 'objects']) or
+                    (info2['category'] == 'floor' and info1['category'] in ['furniture', 'objects'])
+                )
+                
+                if is_floor_object:
+                    results['statistics']['floor_object_issues'] += 1
+                
+                # Count by severity
                 if severity == 'critical':
                     results['statistics']['critical_issues'] += 1
+                elif severity == 'high':
+                    results['statistics']['high_priority_issues'] += 1
+                elif severity == 'medium':
+                    results['statistics']['medium_priority_issues'] += 1
                 
                 # Record the issue
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
-                    'colors': (info1['color'], info2['color']),
-                    'wcag_ratio': wcag_ratio,
-                    'hue_difference': hue_diff,
-                    'saturation_difference': sat_diff,
-                    'boundary_pixels': np.sum(boundary),
+                    'colors': (info1['color'].tolist(), info2['color'].tolist()),
+                    'wcag_ratio': float(wcag_ratio),
+                    'hue_difference': float(hue_diff),
+                    'saturation_difference': float(sat_diff),
+                    'boundary_pixels': int(np.sum(boundary)),
                     'severity': severity,
                     'is_floor_object': is_floor_object,
                     'boundary_mask': boundary
@@ -336,8 +382,10 @@ class UniversalContrastAnalyzer:
                 self._visualize_issue(results['visualization'], boundary, severity)
         
         # Sort issues by severity
-        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
-        results['issues'].sort(key=lambda x: severity_order[x['severity']])
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2}
+        results['issues'].sort(key=lambda x: severity_order.get(x['severity'], 3))
+        
+        logger.info(f"Contrast analysis complete: {results['statistics']['low_contrast_pairs']} issues found")
         
         return results
     
@@ -348,7 +396,6 @@ class UniversalContrastAnalyzer:
             'critical': (255, 0, 0),     # Red
             'high': (255, 128, 0),       # Orange
             'medium': (255, 255, 0),     # Yellow
-            'low': (128, 255, 128)       # Light green
         }
         
         color = colors.get(severity, (255, 255, 255))
@@ -357,8 +404,10 @@ class UniversalContrastAnalyzer:
         kernel = np.ones((3, 3), np.uint8)
         dilated = cv2.dilate(boundary.astype(np.uint8), kernel, iterations=2)
         
-        # Apply color overlay
-        image[dilated > 0] = color
+        # Apply color overlay with transparency
+        overlay = image.copy()
+        overlay[dilated > 0] = color
+        cv2.addWeighted(overlay, 0.5, image, 0.5, 0, image)
         
         return image
     
@@ -374,22 +423,26 @@ class UniversalContrastAnalyzer:
         report.append(f"Total segments analyzed: {stats['total_segments']}")
         report.append(f"Adjacent pairs analyzed: {stats['analyzed_pairs']}")
         report.append(f"Low contrast pairs found: {stats['low_contrast_pairs']}")
-        report.append(f"Critical issues: {stats['critical_issues']}")
+        report.append(f"- Critical issues: {stats['critical_issues']}")
+        report.append(f"- High priority issues: {stats['high_priority_issues']}") 
+        report.append(f"- Medium priority issues: {stats['medium_priority_issues']}")
         report.append(f"Floor-object contrast issues: {stats['floor_object_issues']}\n")
         
         # Detailed issues
         if issues:
             report.append("=== Contrast Issues (sorted by severity) ===\n")
             
-            for i, issue in enumerate(issues, 1):
+            for i, issue in enumerate(issues[:10], 1):  # Show top 10 issues
                 cat1, cat2 = issue['categories']
                 wcag = issue['wcag_ratio']
+                hue_diff = issue['hue_difference']
+                sat_diff = issue['saturation_difference']
                 severity = issue['severity'].upper()
                 
                 report.append(f"{i}. [{severity}] {cat1} ↔ {cat2}")
-                report.append(f"   - WCAG Contrast Ratio: {wcag:.2f} (minimum: {self.wcag_threshold})")
-                report.append(f"   - Hue Difference: {issue['hue_difference']:.1f}°")
-                report.append(f"   - Saturation Difference: {issue['saturation_difference']}")
+                report.append(f"   - WCAG Contrast Ratio: {wcag:.2f}:1 (minimum: 4.5:1)")
+                report.append(f"   - Hue Difference: {hue_diff:.1f}° (recommended: >30°)")
+                report.append(f"   - Saturation Difference: {sat_diff} (recommended: >50)")
                 
                 if issue['is_floor_object']:
                     report.append("   - ⚠️ Object on floor - requires high visibility!")
