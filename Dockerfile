@@ -59,7 +59,7 @@ RUN pip install --no-cache-dir \
     inflect==6.0.4 \
     gdown==4.5.4 \
     wget==3.2 \
-    huggingface_hub==0.15.0 \
+    huggingfac_hub==0.15.0 \
     pytorch_lightning==1.8.6 \
     gradio==3.35.2 \
     diffdist \
@@ -73,12 +73,8 @@ ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 COPY --chown=user:user . /app
 
 # Create directories
-RUN mkdir -p examples output_floor_blackspot
 
 # Download example images
-RUN wget -q https://praeclarumjj3.github.io/files/ade20k.jpeg -P examples/ || true && \
-    wget -q https://praeclarumjj3.github.io/files/cityscapes.png -P examples/ || true && \
-    wget -q https://praeclarumjj3.github.io/files/coco.jpeg -P examples/ || true
 
 # CPU environment
 ENV CUDA_VISIBLE_DEVICES=""
