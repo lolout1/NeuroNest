@@ -1,19 +1,24 @@
-# Core dependencies (torch and detectron2 installed in Dockerfile)
-# Git dependencies
-git+https://github.com/cocodataset/panopticapi.git
-git+https://github.com/mcordts/cityscapesScripts.git
+# Git dependencies compatible with Python 3.8
+git+https://github.com/cocodataset/panopticapi.git@7bb4655
+git+https://github.com/mcordts/cityscapesScripts.git@4f57ab6
 
-# Additional dependencies
-imutils
-cython
-h5py
+# Core dependencies with Python 3.8 compatible versions
+imutils==0.5.4
+cython==0.29.35
+h5py==3.7.0
 timm==0.4.12
-einops
-gdown
-wget
-submitit
-shapely
-regex
-ftfy
-inflect
-diffdist
+einops==0.6.1
+gdown==4.5.4
+wget==3.2
+submitit==1.4.5
+shapely==1.8.5
+regex==2022.10.31
+ftfy==6.1.1
+inflect==6.0.4
+
+# Don't install these - handled in Dockerfile
+# torch
+# torchvision
+# detectron2
+# numpy
+# pillow
