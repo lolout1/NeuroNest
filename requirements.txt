@@ -16,8 +16,6 @@ detectron2==0.6
 opencv-python==4.5.5.64
 
 # Git dependencies
-git+https://github.com/cocodataset/panopticapi.git@7bb4655
-git+https://github.com/mcordts/cityscapesScripts.git@4f57ab6
 
 # Image utilities
 imutils==0.5.4
