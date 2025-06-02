@@ -59,5 +59,10 @@ pytorch_lightning==1.8.6
 # Web interface
 gradio==3.16.2
 scikit-learn
+diffdist
+gdown
+tqdm
+huggingface_hub
+wget
 # Job submission
 submitit==1.4.5
