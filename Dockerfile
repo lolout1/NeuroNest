@@ -17,55 +17,64 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Create user
+# Create user for Hugging Face
 RUN useradd -m -u 1000 user
 
 WORKDIR /app
 
-# CRITICAL: Downgrade setuptools to avoid the deprecated warnings
+# Upgrade pip and install setuptools
 RUN pip install --upgrade pip
 RUN pip install setuptools==69.5.1 wheel
 
-# Install PyTorch and core dependencies
+# Install PyTorch and dependencies
 RUN pip install torch==2.0.1+cpu torchvision==0.15.2+cpu --index-url https://download.pytorch.org/whl/cpu
+
+# Force specific numpy/pillow versions
 RUN pip install numpy==1.24.3 pillow==10.0.0
 
-# Install COCO API first (required by detectron2)
+# Install COCO API and OpenCV
 RUN pip install pycocotools opencv-python
 
-# Method 1: Install detectron2 without editable mode and without build isolation
+# Install detectron2 - FIXED VERSION
 RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
     cd /tmp/detectron2 && \
     git checkout v0.6 && \
     pip install --no-build-isolation --no-deps . && \
-    pip install -r requirements.txt
+    cd / && \
+    rm -rf /tmp/detectron2
 
-# Alternative Method 2: Build wheel first
-# RUN git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2 && \
-#     cd /tmp/detectron2 && \
-#     git checkout v0.6 && \
-#     python setup.py bdist_wheel && \
-#     pip install dist/*.whl && \
-#     pip install -r requirements.txt
+# Install detectron2 dependencies manually (since v0.6 has no requirements.txt)
+RUN pip install \
+    fvcore \
+    iopath \
+    omegaconf \
+    hydra-core \
+    black \
+    pyyaml \
+    matplotlib \
+    tqdm \
+    termcolor \
+    yacs \
+    tabulate \
+    cloudpickle \
+    Pillow \
+    scipy
 
-# Install other dependencies
+# Install additional dependencies
 RUN pip install \
     gradio \
     huggingface_hub \
-    scipy \
     scikit-learn \
-    scikit-image \
-    matplotlib \
-    tqdm
+    scikit-image
 
 # Switch to user
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
-# Copy application
+# Copy application files
 COPY --chown=user:user . /app
 
-# Install remaining requirements as user
+# Install any remaining user requirements
 COPY --chown=user:user requirements.txt /app/
 RUN pip install --user --no-deps -r requirements.txt || true
 
