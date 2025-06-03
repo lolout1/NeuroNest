@@ -681,7 +681,7 @@ def create_gradio_interface():
                     height=400
                 )
 
-                # Settings header (since Accordion is unavailable)
+                # Settings header (Accordion not available in 3.1.7)
                 gr.Markdown("### ⚙️ Analysis Settings")
 
                 # Analysis settings
@@ -724,12 +724,12 @@ def create_gradio_interface():
             with gr.Column():
                 # Analysis tabs
                 with gr.Tabs():
-                    with gr.Tab("📊 Analysis Report"):
+                    with gr.TabItem("📊 Analysis Report"):
                         analysis_report = gr.Markdown(
                             value="Upload an image and click 'Analyze Environment' to begin."
                         )
 
-                    with gr.Tab("🎯 Object Segmentation"):
+                    with gr.TabItem("🎯 Object Segmentation"):
                         seg_display = gr.Image(
                             label="Detected Objects",
                             height=400,
@@ -737,7 +737,7 @@ def create_gradio_interface():
                         )
 
                     if blackspot_ok:
-                        with gr.Tab("⚫ Floor Blackspots"):
+                        with gr.TabItem("⚫ Floor Blackspots"):
                             blackspot_display = gr.Image(
                                 label="Blackspot Detection (Floors Only)",
                                 height=400,
@@ -746,7 +746,7 @@ def create_gradio_interface():
                     else:
                         blackspot_display = gr.Image(visible=False)
 
-                    with gr.Tab("🎨 Contrast Analysis"):
+                    with gr.TabItem("🎨 Contrast Analysis"):
                         contrast_display = gr.Image(
                             label="Low Contrast Areas (All Objects)",
                             height=400,
