@@ -649,7 +649,7 @@ def create_gradio_interface():
     *Following WCAG 2.1 guidelines for visual accessibility*
     """
     
-    with gr.Blocks(title=title, theme=gr.themes.Soft()) as interface:
+    with gr.Blocks(title=title) as interface:
         
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
