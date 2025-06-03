@@ -208,7 +208,6 @@ class ImprovedBlackspotDetector:
         # Check overlap with floor mask
         overlap = blackspot_mask & floor_mask
         overlap_ratio = np.sum(overlap) / np.sum(blackspot_mask)
-
         if overlap_ratio < overlap_threshold:
             return False
 
@@ -217,14 +216,12 @@ class ImprovedBlackspotDetector:
         if len(blackspot_pixels) == 0:
             return False
 
-        # Check if majority of pixels are floor-related classes
         unique_classes, counts = np.unique(blackspot_pixels, return_counts=True)
         floor_pixel_count = sum(
             counts[unique_classes == cls] for cls in self.floor_classes if cls in unique_classes
         )
         floor_ratio = floor_pixel_count / len(blackspot_pixels)
-
-        return floor_ratio > 0.7  # At least 70% of blackspot should be on floor classes
+        return floor_ratio > 0.7  # At least 70% on floor classes
 
     def filter_non_floor_blackspots(
         self,
@@ -251,10 +248,8 @@ class ImprovedBlackspotDetector:
         if self.predictor is None:
             raise RuntimeError("Blackspot detector not initialized")
 
-        # Get original image dimensions
         original_h, original_w = image.shape[:2]
 
-        # Ensure all masks have same dimensions
         if floor_prior is not None and floor_prior.shape != (original_h, original_w):
             floor_prior = cv2.resize(
                 floor_prior.astype(np.uint8),
@@ -269,7 +264,6 @@ class ImprovedBlackspotDetector:
                 interpolation=cv2.INTER_NEAREST
             )
 
-        # Run detection
         try:
             outputs = self.predictor(image)
             instances = outputs["instances"].to("cpu")
@@ -280,17 +274,14 @@ class ImprovedBlackspotDetector:
         if len(instances) == 0:
             return self._empty_results(image)
 
-        # Process results
         pred_classes = instances.pred_classes.numpy()
         pred_masks = instances.pred_masks.numpy()
         scores = instances.scores.numpy()
 
-        # Separate floor and blackspot masks
         blackspot_indices = pred_classes == 1
         blackspot_masks = pred_masks[blackspot_indices] if np.any(blackspot_indices) else []
         blackspot_scores = scores[blackspot_indices] if np.any(blackspot_indices) else []
 
-        # Create or use floor mask
         if floor_prior is not None:
             floor_mask = floor_prior
         else:
@@ -298,20 +289,16 @@ class ImprovedBlackspotDetector:
             for cls in self.floor_classes:
                 floor_mask |= (segmentation == cls)
 
-        # Filter blackspots to only those on floor surfaces
         filtered_blackspot_masks = self.filter_non_floor_blackspots(
             blackspot_masks, segmentation, floor_mask
         )
 
-        # Combine filtered masks
         combined_blackspot = np.zeros(image.shape[:2], dtype=bool)
         for mask in filtered_blackspot_masks:
             combined_blackspot |= mask
 
-        # Create visualizations
         visualization = self.create_visualization(image, floor_mask, combined_blackspot)
 
-        # Calculate statistics
         floor_area = int(np.sum(floor_mask))
         blackspot_area = int(np.sum(combined_blackspot))
         coverage_percentage = (blackspot_area / floor_area * 100) if floor_area > 0 else 0
@@ -336,15 +323,12 @@ class ImprovedBlackspotDetector:
         """Create clear visualization of blackspots on floors only"""
         vis = image.copy()
 
-        # Semi-transparent green overlay for floors
         floor_overlay = vis.copy()
         floor_overlay[floor_mask] = [0, 255, 0]
         vis = cv2.addWeighted(vis, 0.7, floor_overlay, 0.3, 0)
 
-        # Bright red for blackspots
         vis[blackspot_mask] = [255, 0, 0]
 
-        # Add contours for clarity
         blackspot_contours, _ = cv2.findContours(
             blackspot_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -383,10 +367,8 @@ class NeuroNestApp:
         """Initialize all components"""
         logger.info("Initializing NeuroNest application...")
 
-        # Initialize OneFormer
         oneformer_success = self.oneformer.initialize()
 
-        # Initialize blackspot detector if model exists
         blackspot_success = False
         if os.path.exists(blackspot_model_path):
             self.blackspot_detector = ImprovedBlackspotDetector(blackspot_model_path)
@@ -411,7 +393,6 @@ class NeuroNestApp:
             return {"error": "Application not properly initialized"}
 
         try:
-            # Load and preprocess image
             image = cv2.imread(image_path)
             if image is None:
                 return {"error": "Could not load image"}
@@ -427,26 +408,20 @@ class NeuroNestApp:
                 'statistics': {}
             }
 
-            # 1. Semantic Segmentation
             logger.info("Running semantic segmentation...")
             seg_mask, seg_visualization = self.oneformer.semantic_segmentation(image_rgb)
-
             results['segmentation'] = {
                 'visualization': seg_visualization,
                 'mask': seg_mask
             }
 
-            # Extract floor areas
             floor_prior = self.oneformer.extract_floor_areas(seg_mask)
 
-            # 2. Blackspot Detection (improved to only detect on floors)
             if enable_blackspot and self.blackspot_detector is not None:
                 logger.info("Running blackspot detection...")
                 try:
-                    # Resize segmentation mask to match original image if needed
                     h_orig, w_orig = image_rgb.shape[:2]
                     h_seg, w_seg = seg_mask.shape
-
                     if (h_seg, w_seg) != (h_orig, w_orig):
                         seg_mask_resized = cv2.resize(
                             seg_mask.astype(np.uint8),
@@ -465,14 +440,11 @@ class NeuroNestApp:
                     logger.error(f"Error in blackspot detection: {e}")
                     results['blackspot'] = None
 
-            # 3. Universal Contrast Analysis
             if enable_contrast:
                 logger.info("Running universal contrast analysis...")
                 try:
-                    # Resize image to match segmentation size
                     h_seg, w_seg = seg_mask.shape
                     image_for_contrast = cv2.resize(image_rgb, (w_seg, h_seg))
-
                     contrast_results = self.contrast_analyzer.analyze_contrast(
                         image_for_contrast, seg_mask
                     )
@@ -482,7 +454,6 @@ class NeuroNestApp:
                     logger.error(f"Error in contrast analysis: {e}")
                     results['contrast'] = None
 
-            # 4. Generate combined statistics
             stats = self._generate_statistics(results)
             results['statistics'] = stats
 
@@ -499,7 +470,6 @@ class NeuroNestApp:
         """Generate comprehensive statistics"""
         stats = {}
 
-        # Segmentation stats
         if results['segmentation']:
             unique_classes = np.unique(results['segmentation']['mask'])
             stats['segmentation'] = {
@@ -507,7 +477,6 @@ class NeuroNestApp:
                 'image_size': results['segmentation']['mask'].shape
             }
 
-        # Blackspot stats
         if results['blackspot']:
             bs = results['blackspot']
             stats['blackspot'] = {
@@ -518,7 +487,6 @@ class NeuroNestApp:
                 'avg_confidence': bs['avg_confidence']
             }
 
-        # Contrast stats
         if results['contrast']:
             cs = results['contrast']['statistics']
             stats['contrast'] = {
@@ -540,7 +508,6 @@ class NeuroNestApp:
 def create_gradio_interface():
     """Create the Gradio interface"""
 
-    # Initialize the application
     app = NeuroNestApp()
     oneformer_ok, blackspot_ok = app.initialize()
 
@@ -556,7 +523,7 @@ def create_gradio_interface():
     ):
         """Wrapper function for Gradio interface"""
         if image_path is None:
-            return None, None, None, None, "Please upload an image"
+            return None, None, None, "Please upload an image"
 
         results = app.analyze_image(
             image_path=image_path,
@@ -567,20 +534,17 @@ def create_gradio_interface():
         )
 
         if "error" in results:
-            return None, None, None, None, f"Error: {results['error']}"
+            return None, None, None, f"Error: {results['error']}"
 
-        # Extract outputs
         seg_output = results['segmentation']['visualization'] if results['segmentation'] else None
         blackspot_output = results['blackspot']['visualization'] if results['blackspot'] else None
         contrast_output = results['contrast']['visualization'] if results['contrast'] else None
 
-        # Generate universal contrast report
         if results['contrast']:
             contrast_report = app.contrast_analyzer.generate_report(results['contrast'])
         else:
             contrast_report = "Contrast analysis not performed."
 
-        # Generate blackspot analysis report
         if results['blackspot']:
             bs = results['blackspot']
             blackspot_report = (
@@ -593,9 +557,7 @@ def create_gradio_interface():
         else:
             blackspot_report = "Blackspot analysis not performed."
 
-        # Generate full report
         report = generate_comprehensive_report(results, contrast_report, blackspot_report)
-
         return seg_output, blackspot_output, contrast_output, report
 
     def generate_comprehensive_report(results: Dict, contrast_report: str, blackspot_report: str) -> str:
@@ -603,7 +565,6 @@ def create_gradio_interface():
         report = ["# 🧠 NeuroNest Analysis Report\n"]
         report.append(f"*Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
 
-        # Segmentation results
         if results['segmentation']:
             stats = results['statistics'].get('segmentation', {})
             report.append("## 🎯 Object Segmentation")
@@ -611,17 +572,14 @@ def create_gradio_interface():
             report.append(f"- **Resolution:** {stats.get('image_size', 'N/A')}")
             report.append("")
 
-        # Blackspot results
         report.append("## ⚫ Blackspot Analysis")
         report.append(blackspot_report)
         report.append("")
 
-        # Universal contrast analysis
         report.append("## 🎨 Universal Contrast Analysis")
         report.append(contrast_report)
         report.append("")
 
-        # Recommendations
         report.append("## 📋 Recommendations for Alzheimer's Care")
 
         has_issues = False
@@ -648,7 +606,6 @@ def create_gradio_interface():
 
         return "\n".join(report)
 
-    # Create the interface
     title = "🧠 NeuroNest: AI-Powered Environment Safety Analysis"
     description = """
     **Advanced visual analysis for Alzheimer's and dementia care environments**
@@ -662,7 +619,6 @@ def create_gradio_interface():
     """
 
     with gr.Blocks() as interface:
-
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
 
@@ -695,13 +651,13 @@ def create_gradio_interface():
 
         # Next row: image upload and analyze button
         with gr.Row():
-            with gr.Column(scale=1):
+            with gr.Column():
                 image_input = gr.Image(
                     label="📸 Upload Room Image",
                     type="filepath",
                     height=300
                 )
-            with gr.Column(scale=1, min_width=150):
+            with gr.Column():
                 analyze_button = gr.Button(
                     "🔍 Analyze Environment",
                     variant="primary"
@@ -731,7 +687,6 @@ def create_gradio_interface():
             value="Upload an image and click 'Analyze Environment' to begin."
         )
 
-        # Connect the interface
         analyze_button.click(
             fn=analyze_wrapper,
             inputs=[
@@ -749,7 +704,6 @@ def create_gradio_interface():
             ]
         )
 
-        # Footer
         gr.Markdown("""
             ---
             **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis  
