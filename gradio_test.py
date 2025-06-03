@@ -70,7 +70,7 @@ ONEFORMER_CONFIG = {
 # IMPORT UNIVERSAL CONTRAST ANALYZER
 ########################################
 
-from utils.universal_contrast_analyzer import UniversalContrastAnalyzer
+from universal_contrast_analyzer import UniversalContrastAnalyzer
 
 ########################################
 # ONEFORMER INTEGRATION
