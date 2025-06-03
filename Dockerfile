@@ -97,6 +97,7 @@ RUN pip install --user \
     matplotlib==3.5.3 \
     regex==2022.10.31 \
     ftfy==6.1.1 \
+    wandb \
     inflect==6.0.4 \
     gdown==4.5.4 \
     wget==3.2
