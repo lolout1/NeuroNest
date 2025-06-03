@@ -656,7 +656,7 @@ def create_gradio_interface():
         
         with gr.Row():
             # Input Column
-            with gr.Column(scale=1):
+            with gr.Column:
                 # Image upload
                 image_input = gr.Image(
                     label="📸 Upload Room Image",
