@@ -702,7 +702,7 @@ def create_gradio_interface():
                 )
             
             # Output Column
-            with gr.Column(scale=2):
+            with gr.Column:
                 # Analysis tabs
                 with gr.Tabs():
                     with gr.Tab("📊 Analysis Report"):
