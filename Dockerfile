@@ -4,8 +4,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3.9 \
-    python3.9-dev \
+    python3.8 \
+    python3.8-dev \
+    python3.8-distutils \
     python3-pip \
     git \
     wget \
@@ -25,96 +26,80 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Set python3.9 as default
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.9 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 1
+# Set python3.8 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
 
-# Upgrade pip
-RUN python -m pip install --upgrade pip==23.0.1 setuptools==65.5.0 wheel
+# Install pip for python3.8
+RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
+    python get-pip.py && \
+    rm get-pip.py
+
+# Upgrade pip and install build tools
+RUN python -m pip install --upgrade pip==23.0.1 setuptools==59.5.0 wheel cython
 
 # Create user
 RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
 WORKDIR /app
 
-# Install PyTorch 1.9 CPU - FIXED VERSION
-RUN pip install torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+# Install PyTorch 1.9 CPU
+RUN pip install --user torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
 
-# Install core dependencies compatible with torch 1.9
-RUN pip install \
-    numpy==1.19.5 \
+# Install numpy first (required for other packages)
+RUN pip install --user numpy==1.21.6
+
+# Install core dependencies
+RUN pip install --user \
     Pillow==8.3.2 \
-    opencv-python==4.5.3.56 \
-    cython==0.29.24
+    opencv-python==4.5.5.64 \
+    scipy==1.7.3 \
+    scikit-image==0.19.3 \
+    scikit-learn==1.0.2
 
-# Install detectron2 for PyTorch 1.9 CPU - CORRECT URL
-RUN python -m pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
+# Install detectron2 for PyTorch 1.9 CPU
+RUN pip install --user detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
 
-# Install Gradio with compatible dependencies
-RUN pip install \
-    gradio==3.1.7 \
-    httpx==0.23.0 \
-    httpcore==0.15.0 \
-    anyio==3.6.1 \
-    starlette==0.19.1 \
+# Install pycocotools separately with proper build dependencies
+RUN pip install --user "git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI"
+
+# Install other ML dependencies
+RUN pip install --user \
+    timm==0.4.12 \
+    einops==0.6.1 \
+    h5py==3.7.0 \
+    shapely==1.8.5 \
+    tqdm==4.64.1 \
+    imutils==0.5.4
+
+# Install Gradio and web dependencies
+RUN pip install --user \
+    gradio==3.35.2 \
+    huggingface_hub==0.11.1 \
     fastapi==0.78.0 \
     uvicorn==0.18.2
 
-# Install other dependencies
-RUN pip install \
-    huggingface_hub==0.8.1 \
-    scipy==1.7.1 \
-    scikit-image==0.18.3 \
-    scikit-learn==1.0.2 \
-    timm==0.4.12 \
-    einops==0.3.2 \
-    tqdm==4.62.3 \
-    imutils==0.5.4 \
-    shapely==1.8.0 \
-    h5py==3.1.0 \
-    regex==2021.11.10 \
-    ftfy==6.0.3 \
-    inflect==5.3.0 \
-    gdown==4.2.0 \
-    wget==3.2 \
+# Install remaining dependencies
+RUN pip install --user \
     PyYAML==5.4.1 \
-    pycocotools==2.0.4 \
-    matplotlib==3.5.1
+    matplotlib==3.5.3 \
+    regex==2022.10.31 \
+    ftfy==6.1.1 \
+    inflect==6.0.4 \
+    gdown==4.5.4 \
+    wget==3.2
 
-# Optional dependencies
-RUN pip install submitit==1.4.1 || echo "submitit failed"
-RUN pip install pytorch_lightning==1.5.10 || echo "pytorch_lightning failed"
-RUN pip install wandb==0.12.9 || echo "wandb failed"
-RUN pip install icecream==2.1.1 || echo "icecream failed"
+# Try NATTEN for CPU (optional)
+RUN pip install --user natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
+    echo "NATTEN installation failed - continuing without it"
 
-# Try NATTEN for torch 1.9
-RUN pip install natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
-    echo "NATTEN installation failed"
-
-# OneFormer specific dependencies
-RUN pip install \
-    omegaconf==2.1.1 \
-    hydra-core==1.1.1 \
-    termcolor==1.1.0 \
-    tabulate==0.8.9 \
-    yacs==0.1.8 \
-    cloudpickle==2.0.0 \
-    packaging==21.3
-
-# Install additional tools
-RUN pip install \
-    iopath==0.1.9 \
-    fvcore==0.1.5.post20220512 \
-    pydot==1.4.2 \
-    portalocker==2.5.1
-
-# Switch to user
-USER user
-ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
-
-# Copy application
+# Copy application files
 COPY --chown=user:user . /app
 
-# CPU environment
+# Set environment variables
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV OMP_NUM_THREADS=4
@@ -122,4 +107,5 @@ ENV MKL_NUM_THREADS=4
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
+
 CMD ["python", "gradio_test.py"]

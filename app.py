@@ -35,8 +35,12 @@ def check_dependencies():
         logger.info(f"PyTorch version: {torch.__version__}")
         logger.info(f"CUDA available: {torch.cuda.is_available()}")
         
+        # Verify torch version
+        if not torch.__version__.startswith('1.9'):
+            logger.warning(f"Expected PyTorch 1.9.x, got {torch.__version__}")
+        
         import detectron2
-        logger.info(f"Detectron2 imported successfully")
+        logger.info(f"Detectron2 version: {detectron2.__version__}")
         
         import gradio as gr
         logger.info(f"Gradio version: {gr.__version__}")
@@ -56,6 +60,10 @@ def check_dependencies():
             PIL.Image.LINEAR = PIL.Image.BILINEAR
             logger.info("Applied PIL compatibility patch")
         
+        # Check numpy version
+        import numpy as np
+        logger.info(f"NumPy version: {np.__version__}")
+        
         return True
         
     except ImportError as e:
@@ -65,7 +73,8 @@ def check_dependencies():
 def main():
     """Main application entry point"""
     print("=" * 50)
-    print(f"Application Startup at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"NeuroNest Application Startup")
+    print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 50)
     
     # Setup paths
@@ -87,11 +96,12 @@ def main():
         interface.queue(max_size=10).launch(
             server_name="0.0.0.0",
             server_port=7860,
-            share=False  # Disable share for production
+            share=True,
+            debug=False
         )
         
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error launching app: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
