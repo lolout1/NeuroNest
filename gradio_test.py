@@ -156,11 +156,9 @@ class OneFormerManager:
     def extract_floor_areas(self, segmentation: np.ndarray) -> np.ndarray:
         """Extract floor areas from segmentation"""
         floor_mask = np.zeros_like(segmentation, dtype=bool)
-
         for class_ids in FLOOR_CLASSES.values():
             for class_id in class_ids:
                 floor_mask |= (segmentation == class_id)
-
         return floor_mask
 
 ########################################
@@ -173,7 +171,6 @@ class ImprovedBlackspotDetector:
     def __init__(self, model_path: str):
         self.model_path = model_path
         self.predictor = None
-
         # Expanded floor-related classes in ADE20K
         self.floor_classes = [3, 4, 13, 28, 78]  # floor, wood floor, rug, carpet, mat
 
@@ -237,13 +234,11 @@ class ImprovedBlackspotDetector:
     ) -> List[np.ndarray]:
         """Filter out blackspots that are not on floor surfaces"""
         filtered_masks = []
-
         for mask in blackspot_masks:
             if self.is_on_floor_surface(mask, segmentation, floor_mask):
                 filtered_masks.append(mask)
             else:
                 logger.debug(f"Filtered out non-floor blackspot with area {np.sum(mask)}")
-
         return filtered_masks
 
     def detect_blackspots(
@@ -299,7 +294,6 @@ class ImprovedBlackspotDetector:
         if floor_prior is not None:
             floor_mask = floor_prior
         else:
-            # Create floor mask from segmentation
             floor_mask = np.zeros(segmentation.shape, dtype=bool)
             for cls in self.floor_classes:
                 floor_mask |= (segmentation == cls)
@@ -687,35 +681,37 @@ def create_gradio_interface():
                     height=400
                 )
 
+                # Settings header (since Accordion is unavailable)
+                gr.Markdown("### ⚙️ Analysis Settings")
+
                 # Analysis settings
-                with gr.Accordion("⚙️ Analysis Settings", open=True):
-                    enable_blackspot = gr.Checkbox(
-                        value=blackspot_ok,
-                        label="Enable Floor Blackspot Detection",
-                        interactive=blackspot_ok
-                    )
+                enable_blackspot = gr.Checkbox(
+                    value=blackspot_ok,
+                    label="Enable Floor Blackspot Detection",
+                    interactive=blackspot_ok
+                )
 
-                    blackspot_threshold = gr.Slider(
-                        minimum=0.1,
-                        maximum=0.9,
-                        value=0.5,
-                        step=0.05,
-                        label="Detection Sensitivity",
-                        visible=blackspot_ok
-                    )
+                blackspot_threshold = gr.Slider(
+                    minimum=0.1,
+                    maximum=0.9,
+                    value=0.5,
+                    step=0.05,
+                    label="Detection Sensitivity",
+                    visible=blackspot_ok
+                )
 
-                    enable_contrast = gr.Checkbox(
-                        value=True,
-                        label="Enable Universal Contrast Analysis"
-                    )
+                enable_contrast = gr.Checkbox(
+                    value=True,
+                    label="Enable Universal Contrast Analysis"
+                )
 
-                    contrast_threshold = gr.Slider(
-                        minimum=3.0,
-                        maximum=7.0,
-                        value=4.5,
-                        step=0.1,
-                        label="WCAG Contrast Threshold (4.5:1 recommended)"
-                    )
+                contrast_threshold = gr.Slider(
+                    minimum=3.0,
+                    maximum=7.0,
+                    value=4.5,
+                    step=0.1,
+                    label="WCAG Contrast Threshold (4.5:1 recommended)"
+                )
 
                 # Analysis button
                 analyze_button = gr.Button(
