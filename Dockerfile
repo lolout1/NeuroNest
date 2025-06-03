@@ -91,6 +91,8 @@ RUN pip install --user \
     huggingface_hub==0.8.1 \
     gradio==3.1.7
 
+RUN pip install natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
+    echo "NATTEN installation failed"
 # Install remaining dependencies
 RUN pip install --user \
     PyYAML==5.4.1 \
