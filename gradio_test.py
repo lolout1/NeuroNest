@@ -72,183 +72,6 @@ ONEFORMER_CONFIG = {
 
 from utils.universal_contrast_analyzer import UniversalContrastAnalyzer
 
-# Keep old class for compatibility but deprecated
-class RobustContrastAnalyzer:
-    """Advanced contrast analyzer for Alzheimer's-friendly environments"""
-    
-    def __init__(self, wcag_threshold: float = 4.5):
-        self.wcag_threshold = wcag_threshold
-        
-        # ADE20K class mappings for important objects
-        self.semantic_classes = {
-            'floor': [3, 4, 13, 28, 78],  # floor, wood floor, rug, carpet, mat
-            'wall': [0, 1, 9],            # wall, building, brick
-            'ceiling': [5],               # ceiling
-            'furniture': [10, 19, 15, 7, 18, 23],  # sofa, chair, table, bed, armchair, cabinet
-            'door': [25],                 # door
-            'window': [8],                # window
-            'stairs': [53],               # stairs
-        }
-        
-        # Priority relationships for safety
-        self.priority_relationships = {
-            ('floor', 'furniture'): ('critical', 'Furniture must be clearly visible against floor'),
-            ('floor', 'stairs'): ('critical', 'Stairs must have clear contrast with floor'),
-            ('floor', 'door'): ('high', 'Door should be easily distinguishable from floor'),
-            ('wall', 'furniture'): ('high', 'Furniture should stand out from walls'),
-            ('wall', 'door'): ('high', 'Doors should be clearly visible on walls'),
-            ('wall', 'window'): ('medium', 'Windows should have adequate contrast'),
-            ('ceiling', 'wall'): ('low', 'Ceiling-wall contrast is less critical'),
-        }
-    
-    def get_object_category(self, class_id: int) -> str:
-        """Map segmentation class to object category"""
-        for category, class_ids in self.semantic_classes.items():
-            if class_id in class_ids:
-                return category
-        return 'other'
-    
-    def calculate_wcag_contrast(self, color1: np.ndarray, color2: np.ndarray) -> float:
-        """Calculate WCAG contrast ratio"""
-        def relative_luminance(rgb):
-            rgb_norm = rgb / 255.0
-            rgb_linear = np.where(rgb_norm <= 0.03928, 
-                                rgb_norm / 12.92, 
-                                ((rgb_norm + 0.055) / 1.055) ** 2.4)
-            return np.dot(rgb_linear, [0.2126, 0.7152, 0.0722])
-        
-        lum1 = relative_luminance(color1)
-        lum2 = relative_luminance(color2)
-        
-        lighter = max(lum1, lum2)
-        darker = min(lum1, lum2)
-        
-        return (lighter + 0.05) / (darker + 0.05)
-    
-    def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Extract dominant color from masked region"""
-        if not np.any(mask):
-            return np.array([128, 128, 128])
-        
-        masked_pixels = image[mask]
-        if len(masked_pixels) == 0:
-            return np.array([128, 128, 128])
-        
-        # Use median for robustness against outliers
-        return np.median(masked_pixels, axis=0).astype(int)
-    
-    def find_adjacent_segments(self, seg1_mask: np.ndarray, seg2_mask: np.ndarray, 
-                             min_boundary_length: int = 30) -> np.ndarray:
-        """Find clean boundaries between segments"""
-        kernel = np.ones((3, 3), np.uint8)
-        dilated1 = cv2.dilate(seg1_mask.astype(np.uint8), kernel, iterations=1)
-        dilated2 = cv2.dilate(seg2_mask.astype(np.uint8), kernel, iterations=1)
-        
-        boundary = dilated1 & dilated2
-        
-        # Remove small disconnected components
-        contours, _ = cv2.findContours(boundary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        clean_boundary = np.zeros_like(boundary)
-        
-        for contour in contours:
-            if cv2.contourArea(contour) >= min_boundary_length:
-                cv2.fillPoly(clean_boundary, [contour], 1)
-        
-        return clean_boundary.astype(bool)
-    
-    def analyze_contrast(self, image: np.ndarray, segmentation: np.ndarray) -> Dict:
-        """Perform comprehensive contrast analysis"""
-        h, w = segmentation.shape
-        results = {
-            'critical_issues': [],
-            'high_issues': [],
-            'medium_issues': [],
-            'visualization': image.copy(),
-            'statistics': {}
-        }
-        
-        # Build segment information
-        unique_segments = np.unique(segmentation)
-        segment_info = {}
-        
-        for seg_id in unique_segments:
-            if seg_id == 0:  # Skip background
-                continue
-                
-            mask = segmentation == seg_id
-            if np.sum(mask) < 100:  # Skip very small segments
-                continue
-                
-            category = self.get_object_category(seg_id)
-            if category == 'other':
-                continue
-                
-            segment_info[seg_id] = {
-                'category': category,
-                'mask': mask,
-                'color': self.extract_dominant_color(image, mask),
-                'area': np.sum(mask)
-            }
-        
-        # Analyze priority relationships
-        issue_counts = {'critical': 0, 'high': 0, 'medium': 0}
-        
-        for seg_id1, info1 in segment_info.items():
-            for seg_id2, info2 in segment_info.items():
-                if seg_id1 >= seg_id2:
-                    continue
-                
-                # Check if this is a priority relationship
-                relationship = tuple(sorted([info1['category'], info2['category']]))
-                if relationship not in self.priority_relationships:
-                    continue
-                
-                priority, description = self.priority_relationships[relationship]
-                
-                # Check if segments are adjacent
-                boundary = self.find_adjacent_segments(info1['mask'], info2['mask'])
-                if not np.any(boundary):
-                    continue
-                
-                # Calculate contrast
-                wcag_contrast = self.calculate_wcag_contrast(info1['color'], info2['color'])
-                
-                # Determine if there's an issue
-                if wcag_contrast < self.wcag_threshold:
-                    issue = {
-                        'categories': (info1['category'], info2['category']),
-                        'contrast_ratio': wcag_contrast,
-                        'boundary_area': np.sum(boundary),
-                        'description': description,
-                        'priority': priority
-                    }
-                    
-                    # Color-code boundaries and store issues
-                    if priority == 'critical':
-                        results['critical_issues'].append(issue)
-                        results['visualization'][boundary] = [255, 0, 0]  # Red
-                        issue_counts['critical'] += 1
-                    elif priority == 'high':
-                        results['high_issues'].append(issue)
-                        results['visualization'][boundary] = [255, 165, 0]  # Orange
-                        issue_counts['high'] += 1
-                    elif priority == 'medium':
-                        results['medium_issues'].append(issue)
-                        results['visualization'][boundary] = [255, 255, 0]  # Yellow
-                        issue_counts['medium'] += 1
-        
-        # Calculate statistics
-        results['statistics'] = {
-            'total_segments': len(segment_info),
-            'total_issues': sum(issue_counts.values()),
-            'critical_count': issue_counts['critical'],
-            'high_count': issue_counts['high'],
-            'medium_count': issue_counts['medium'],
-            'wcag_threshold': self.wcag_threshold
-        }
-        
-        return results
-
 ########################################
 # ONEFORMER INTEGRATION
 ########################################
@@ -341,16 +164,19 @@ class OneFormerManager:
 
 
 ########################################
-# ENHANCED BLACKSPOT DETECTION WITH CLEAR VISUALIZATION
+# IMPROVED BLACKSPOT DETECTION
 ########################################
 
-class BlackspotDetector:
-    """Manages blackspot detection with MaskRCNN - Enhanced Version"""
+class ImprovedBlackspotDetector:
+    """Enhanced blackspot detector that only detects on floor surfaces"""
     
     def __init__(self, model_path: str):
         self.model_path = model_path
         self.predictor = None
-    
+        
+        # Expanded floor-related classes in ADE20K
+        self.floor_classes = [3, 4, 13, 28, 78]  # floor, wood floor, rug, carpet, mat
+        
     def initialize(self, threshold: float = 0.5) -> bool:
         """Initialize MaskRCNN model"""
         try:
@@ -371,190 +197,175 @@ class BlackspotDetector:
             logger.error(f"Failed to initialize blackspot detector: {e}")
             return False
     
-    def create_enhanced_visualizations(self, image: np.ndarray, floor_mask: np.ndarray, 
-                                     blackspot_mask: np.ndarray) -> Dict:
-        """Create multiple enhanced visualizations of blackspot detection"""
+    def is_on_floor_surface(self, blackspot_mask: np.ndarray, segmentation: np.ndarray, 
+                           floor_mask: np.ndarray, overlap_threshold: float = 0.8) -> bool:
+        """Check if a blackspot is actually on a floor surface"""
+        if np.sum(blackspot_mask) == 0:
+            return False
         
-        # 1. Pure Segmentation View (like semantic segmentation output)
-        segmentation_view = np.zeros((*image.shape[:2], 3), dtype=np.uint8)
-        segmentation_view[floor_mask] = [34, 139, 34]      # Forest green for floor
-        segmentation_view[blackspot_mask] = [255, 0, 0]    # Bright red for blackspots
-        segmentation_view[~(floor_mask | blackspot_mask)] = [128, 128, 128]  # Gray for other areas
+        # Check overlap with floor mask
+        overlap = blackspot_mask & floor_mask
+        overlap_ratio = np.sum(overlap) / np.sum(blackspot_mask)
         
-        # 2. High Contrast Overlay
-        high_contrast_overlay = image.copy()
-        # Make background slightly darker to emphasize blackspots
-        high_contrast_overlay = cv2.convertScaleAbs(high_contrast_overlay, alpha=0.6, beta=0)
-        # Add bright overlays
-        high_contrast_overlay[floor_mask] = cv2.addWeighted(
-            high_contrast_overlay[floor_mask], 0.7, 
-            np.full_like(high_contrast_overlay[floor_mask], [0, 255, 0]), 0.3, 0
-        )
-        high_contrast_overlay[blackspot_mask] = [255, 0, 255]  # Magenta for maximum visibility
+        if overlap_ratio < overlap_threshold:
+            return False
         
-        # 3. Blackspot-only View (white blackspots on black background)
-        blackspot_only = np.zeros((*image.shape[:2], 3), dtype=np.uint8)
-        blackspot_only[blackspot_mask] = [255, 255, 255]  # White blackspots
-        blackspot_only[floor_mask & ~blackspot_mask] = [64, 64, 64]  # Dark gray for floor areas
+        # Additional check: verify the underlying segmentation class
+        blackspot_pixels = segmentation[blackspot_mask]
+        if len(blackspot_pixels) == 0:
+            return False
         
-        # 4. Side-by-side comparison
-        h, w = image.shape[:2]
-        side_by_side = np.zeros((h, w * 2, 3), dtype=np.uint8)
-        side_by_side[:, :w] = image
-        side_by_side[:, w:] = segmentation_view
+        # Check if majority of pixels are floor-related classes
+        unique_classes, counts = np.unique(blackspot_pixels, return_counts=True)
+        floor_pixel_count = sum(counts[unique_classes == cls] for cls in self.floor_classes 
+                               if cls in unique_classes)
+        floor_ratio = floor_pixel_count / len(blackspot_pixels)
         
-        # Add text labels
-        cv2.putText(side_by_side, "Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(side_by_side, "Blackspot Detection", (w + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        # 5. Annotated view with bounding boxes and labels
-        annotated_view = image.copy()
-        
-        # Find blackspot contours for bounding boxes
-        blackspot_contours, _ = cv2.findContours(
-            blackspot_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        
-        for i, contour in enumerate(blackspot_contours):
-            if cv2.contourArea(contour) > 50:  # Filter small artifacts
-                # Draw bounding box
-                x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(annotated_view, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                
-                # Draw contour
-                cv2.drawContours(annotated_view, [contour], -1, (255, 0, 255), 2)
-                
-                # Add label
-                area = cv2.contourArea(contour)
-                label = f"Blackspot {i+1}: {area:.0f}px"
-                cv2.putText(annotated_view, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        
-        return {
-            'segmentation_view': segmentation_view,
-            'high_contrast_overlay': high_contrast_overlay,
-            'blackspot_only': blackspot_only,
-            'side_by_side': side_by_side,
-            'annotated_view': annotated_view
-        }
+        return floor_ratio > 0.7  # At least 70% of blackspot should be on floor classes
     
-    def detect_blackspots(self, image: np.ndarray, floor_prior: Optional[np.ndarray] = None) -> Dict:
-        """Detect blackspots with enhanced visualizations"""
+    def filter_non_floor_blackspots(self, blackspot_masks: List[np.ndarray], 
+                                   segmentation: np.ndarray, floor_mask: np.ndarray) -> List[np.ndarray]:
+        """Filter out blackspots that are not on floor surfaces"""
+        filtered_masks = []
+        
+        for mask in blackspot_masks:
+            if self.is_on_floor_surface(mask, segmentation, floor_mask):
+                filtered_masks.append(mask)
+            else:
+                logger.debug(f"Filtered out non-floor blackspot with area {np.sum(mask)}")
+        
+        return filtered_masks
+    
+    def detect_blackspots(self, image: np.ndarray, segmentation: np.ndarray, 
+                         floor_prior: Optional[np.ndarray] = None) -> Dict:
+        """Detect blackspots only on floor surfaces"""
         if self.predictor is None:
             raise RuntimeError("Blackspot detector not initialized")
         
         # Get original image dimensions
         original_h, original_w = image.shape[:2]
         
-        # Handle floor prior shape mismatch
-        processed_image = image.copy()
-        if floor_prior is not None:
-            prior_h, prior_w = floor_prior.shape
-            
-            # Resize floor_prior to match original image if needed
-            if (prior_h, prior_w) != (original_h, original_w):
-                logger.info(f"Resizing floor prior from {(prior_h, prior_w)} to {(original_h, original_w)}")
-                floor_prior_resized = cv2.resize(
-                    floor_prior.astype(np.uint8), 
-                    (original_w, original_h), 
-                    interpolation=cv2.INTER_NEAREST
-                ).astype(bool)
-            else:
-                floor_prior_resized = floor_prior
-        else:
-            floor_prior_resized = None
+        # Ensure all masks have same dimensions
+        if floor_prior is not None and floor_prior.shape != (original_h, original_w):
+            floor_prior = cv2.resize(
+                floor_prior.astype(np.uint8), 
+                (original_w, original_h), 
+                interpolation=cv2.INTER_NEAREST
+            ).astype(bool)
         
-        # Run detection on the processed image
+        if segmentation.shape != (original_h, original_w):
+            segmentation = cv2.resize(
+                segmentation.astype(np.uint8),
+                (original_w, original_h),
+                interpolation=cv2.INTER_NEAREST
+            )
+        
+        # Run detection
         try:
-            outputs = self.predictor(processed_image)
+            outputs = self.predictor(image)
             instances = outputs["instances"].to("cpu")
         except Exception as e:
             logger.error(f"Error in MaskRCNN prediction: {e}")
-            # Return empty results
-            empty_mask = np.zeros(image.shape[:2], dtype=bool)
-            return {
-                'visualization': image,
-                'floor_mask': empty_mask,
-                'blackspot_mask': empty_mask,
-                'floor_area': 0,
-                'blackspot_area': 0,
-                'coverage_percentage': 0,
-                'num_detections': 0,
-                'avg_confidence': 0.0,
-                'enhanced_views': self.create_enhanced_visualizations(image, empty_mask, empty_mask)
-            }
+            return self._empty_results(image)
+        
+        if len(instances) == 0:
+            return self._empty_results(image)
         
         # Process results
-        if len(instances) == 0:
-            # No detections
-            combined_floor = floor_prior_resized if floor_prior_resized is not None else np.zeros(image.shape[:2], dtype=bool)
-            combined_blackspot = np.zeros(image.shape[:2], dtype=bool)
-            blackspot_scores = []
-        else:
-            pred_classes = instances.pred_classes.numpy()
-            pred_masks = instances.pred_masks.numpy()
-            scores = instances.scores.numpy()
-            
-            # Separate floor and blackspot masks
-            floor_indices = pred_classes == 0
-            blackspot_indices = pred_classes == 1
-            
-            floor_masks = pred_masks[floor_indices] if np.any(floor_indices) else []
-            blackspot_masks = pred_masks[blackspot_indices] if np.any(blackspot_indices) else []
-            blackspot_scores = scores[blackspot_indices] if np.any(blackspot_indices) else []
-            
-            # Combine masks
-            combined_floor = np.zeros(image.shape[:2], dtype=bool)
-            combined_blackspot = np.zeros(image.shape[:2], dtype=bool)
-            
-            for mask in floor_masks:
-                combined_floor |= mask
-            
-            for mask in blackspot_masks:
-                combined_blackspot |= mask
-            
-            # Apply floor prior if available
-            if floor_prior_resized is not None:
-                # Combine OneFormer floor detection with MaskRCNN floor detection
-                combined_floor |= floor_prior_resized
-                # Keep only blackspots that are on floors
-                combined_blackspot &= combined_floor
+        pred_classes = instances.pred_classes.numpy()
+        pred_masks = instances.pred_masks.numpy()
+        scores = instances.scores.numpy()
         
-        # Create all enhanced visualizations
-        enhanced_views = self.create_enhanced_visualizations(image, combined_floor, combined_blackspot)
+        # Separate floor and blackspot masks
+        blackspot_indices = pred_classes == 1
+        blackspot_masks = pred_masks[blackspot_indices] if np.any(blackspot_indices) else []
+        blackspot_scores = scores[blackspot_indices] if np.any(blackspot_indices) else []
+        
+        # Create or use floor mask
+        if floor_prior is not None:
+            floor_mask = floor_prior
+        else:
+            # Create floor mask from segmentation
+            floor_mask = np.zeros(segmentation.shape, dtype=bool)
+            for cls in self.floor_classes:
+                floor_mask |= (segmentation == cls)
+        
+        # Filter blackspots to only those on floor surfaces
+        filtered_blackspot_masks = self.filter_non_floor_blackspots(
+            blackspot_masks, segmentation, floor_mask
+        )
+        
+        # Combine filtered masks
+        combined_blackspot = np.zeros(image.shape[:2], dtype=bool)
+        for mask in filtered_blackspot_masks:
+            combined_blackspot |= mask
+        
+        # Create visualizations
+        visualization = self.create_visualization(image, floor_mask, combined_blackspot)
         
         # Calculate statistics
-        floor_area = int(np.sum(combined_floor))
+        floor_area = int(np.sum(floor_mask))
         blackspot_area = int(np.sum(combined_blackspot))
         coverage_percentage = (blackspot_area / floor_area * 100) if floor_area > 0 else 0
         
-        # Count individual blackspot instances
-        blackspot_contours, _ = cv2.findContours(
-            combined_blackspot.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        actual_detections = len([c for c in blackspot_contours if cv2.contourArea(c) > 50])
-        
         return {
-            'visualization': enhanced_views['high_contrast_overlay'],  # Main view
-            'floor_mask': combined_floor,
+            'visualization': visualization,
+            'floor_mask': floor_mask,
             'blackspot_mask': combined_blackspot,
             'floor_area': floor_area,
             'blackspot_area': blackspot_area,
             'coverage_percentage': coverage_percentage,
-            'num_detections': actual_detections,
-            'avg_confidence': float(np.mean(blackspot_scores)) if len(blackspot_scores) > 0 else 0.0,
-            'enhanced_views': enhanced_views  # All visualization options
+            'num_detections': len(filtered_blackspot_masks),
+            'avg_confidence': float(np.mean(blackspot_scores)) if len(blackspot_scores) > 0 else 0.0
         }
+    
+    def create_visualization(self, image: np.ndarray, floor_mask: np.ndarray, 
+                           blackspot_mask: np.ndarray) -> np.ndarray:
+        """Create clear visualization of blackspots on floors only"""
+        vis = image.copy()
+        
+        # Semi-transparent green overlay for floors
+        floor_overlay = vis.copy()
+        floor_overlay[floor_mask] = [0, 255, 0]
+        vis = cv2.addWeighted(vis, 0.7, floor_overlay, 0.3, 0)
+        
+        # Bright red for blackspots
+        vis[blackspot_mask] = [255, 0, 0]
+        
+        # Add contours for clarity
+        blackspot_contours, _ = cv2.findContours(
+            blackspot_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        cv2.drawContours(vis, blackspot_contours, -1, (255, 255, 0), 2)
+        
+        return vis
+    
+    def _empty_results(self, image: np.ndarray) -> Dict:
+        """Return empty results structure"""
+        empty_mask = np.zeros(image.shape[:2], dtype=bool)
+        return {
+            'visualization': image,
+            'floor_mask': empty_mask,
+            'blackspot_mask': empty_mask,
+            'floor_area': 0,
+            'blackspot_area': 0,
+            'coverage_percentage': 0,
+            'num_detections': 0,
+            'avg_confidence': 0.0
+        }
+
+
 ########################################
-# FIXED MAIN APPLICATION CLASS
+# MAIN APPLICATION CLASS
 ########################################
 
 class NeuroNestApp:
-    """Main application class integrating all components - FIXED VERSION"""
+    """Main application class integrating all components"""
     
     def __init__(self):
         self.oneformer = OneFormerManager()
         self.blackspot_detector = None
-        self.contrast_analyzer = UniversalContrastAnalyzer()
+        self.contrast_analyzer = UniversalContrastAnalyzer(wcag_threshold=4.5)
         self.initialized = False
     
     def initialize(self, blackspot_model_path: str = "./output_floor_blackspot/model_0004999.pth"):
@@ -567,8 +378,8 @@ class NeuroNestApp:
         # Initialize blackspot detector if model exists
         blackspot_success = False
         if os.path.exists(blackspot_model_path):
-            self.blackspot_detector = BlackspotDetector(blackspot_model_path)
-            blackspot_success = True
+            self.blackspot_detector = ImprovedBlackspotDetector(blackspot_model_path)
+            blackspot_success = self.blackspot_detector.initialize()
         else:
             logger.warning(f"Blackspot model not found at {blackspot_model_path}")
         
@@ -581,7 +392,7 @@ class NeuroNestApp:
                      contrast_threshold: float = 4.5,
                      enable_blackspot: bool = True,
                      enable_contrast: bool = True) -> Dict:
-        """Perform complete image analysis - FIXED VERSION"""
+        """Perform complete image analysis"""
         
         if not self.initialized:
             return {"error": "Application not properly initialized"}
@@ -603,53 +414,59 @@ class NeuroNestApp:
                 'statistics': {}
             }
             
-            # 1. Semantic Segmentation (always performed)
+            # 1. Semantic Segmentation
             logger.info("Running semantic segmentation...")
             seg_mask, seg_visualization = self.oneformer.semantic_segmentation(image_rgb)
-            logger.info(f"Segmentation mask shape: {seg_mask.shape}")
             
             results['segmentation'] = {
                 'visualization': seg_visualization,
                 'mask': seg_mask
             }
             
-            # Extract floor areas for blackspot detection
+            # Extract floor areas
             floor_prior = self.oneformer.extract_floor_areas(seg_mask)
-            logger.info(f"Floor prior shape: {floor_prior.shape}, total floor pixels: {np.sum(floor_prior)}")
             
-            # 2. Blackspot Detection (if enabled and model available)
+            # 2. Blackspot Detection (improved to only detect on floors)
             if enable_blackspot and self.blackspot_detector is not None:
                 logger.info("Running blackspot detection...")
                 try:
-                    self.blackspot_detector.initialize(threshold=blackspot_threshold)
-                    blackspot_results = self.blackspot_detector.detect_blackspots(image_rgb, floor_prior)
+                    # Resize segmentation mask to match original image if needed
+                    h_orig, w_orig = image_rgb.shape[:2]
+                    h_seg, w_seg = seg_mask.shape
+                    
+                    if (h_seg, w_seg) != (h_orig, w_orig):
+                        seg_mask_resized = cv2.resize(
+                            seg_mask.astype(np.uint8),
+                            (w_orig, h_orig),
+                            interpolation=cv2.INTER_NEAREST
+                        )
+                    else:
+                        seg_mask_resized = seg_mask
+                    
+                    blackspot_results = self.blackspot_detector.detect_blackspots(
+                        image_rgb, seg_mask_resized, floor_prior
+                    )
                     results['blackspot'] = blackspot_results
-                    logger.info("Blackspot detection completed successfully")
+                    logger.info("Blackspot detection completed")
                 except Exception as e:
                     logger.error(f"Error in blackspot detection: {e}")
-                    # Continue without blackspot results
                     results['blackspot'] = None
             
-            # 3. Contrast Analysis (if enabled)
+            # 3. Universal Contrast Analysis
             if enable_contrast:
-                logger.info("Running contrast analysis...")
+                logger.info("Running universal contrast analysis...")
                 try:
-                    # Use the resized image for contrast analysis to match segmentation
-                    width = ONEFORMER_CONFIG["ADE20K"]["width"]
-                    h, w = image_rgb.shape[:2]
-                    if w != width:
-                        scale = width / w
-                        new_h = int(h * scale)
-                        image_for_contrast = cv2.resize(image_rgb, (width, new_h))
-                    else:
-                        image_for_contrast = image_rgb
+                    # Resize image to match segmentation size
+                    h_seg, w_seg = seg_mask.shape
+                    image_for_contrast = cv2.resize(image_rgb, (w_seg, h_seg))
                     
-                    contrast_results = self.contrast_analyzer.analyze_contrast(image_for_contrast, seg_mask)
+                    contrast_results = self.contrast_analyzer.analyze_contrast(
+                        image_for_contrast, seg_mask
+                    )
                     results['contrast'] = contrast_results
-                    logger.info("Contrast analysis completed successfully")
+                    logger.info("Contrast analysis completed")
                 except Exception as e:
                     logger.error(f"Error in contrast analysis: {e}")
-                    # Continue without contrast results
                     results['contrast'] = None
             
             # 4. Generate combined statistics
@@ -691,31 +508,25 @@ class NeuroNestApp:
         # Contrast stats
         if results['contrast']:
             cs = results['contrast']['statistics']
-            # Count issues by severity
-            critical_count = sum(1 for issue in results['contrast'].get('issues', []) if issue['severity'] == 'critical')
-            high_count = sum(1 for issue in results['contrast'].get('issues', []) if issue['severity'] == 'high')
-            medium_count = sum(1 for issue in results['contrast'].get('issues', []) if issue['severity'] == 'medium')
-            
             stats['contrast'] = {
-                'total_issues': cs.get('low_contrast_pairs', 0),
-                'critical_issues': critical_count,
-                'high_priority_issues': high_count,
-                'medium_priority_issues': medium_count,
-                'segments_analyzed': cs.get('total_segments', 0),
+                'total_segments': cs.get('total_segments', 0),
+                'analyzed_pairs': cs.get('analyzed_pairs', 0),
+                'low_contrast_pairs': cs.get('low_contrast_pairs', 0),
+                'critical_issues': cs.get('critical_issues', 0),
+                'high_priority_issues': cs.get('high_priority_issues', 0),
+                'medium_priority_issues': cs.get('medium_priority_issues', 0),
                 'floor_object_issues': cs.get('floor_object_issues', 0)
             }
         
         return stats
+
+
 ########################################
 # GRADIO INTERFACE
 ########################################
 
-########################################
-# ENHANCED GRADIO INTERFACE WITH MULTIPLE BLACKSPOT VIEWS
-########################################
-
 def create_gradio_interface():
-    """Create the enhanced Gradio interface with better blackspot visualization"""
+    """Create the Gradio interface"""
     
     # Initialize the application
     app = NeuroNestApp()
@@ -725,10 +536,10 @@ def create_gradio_interface():
         raise RuntimeError("Failed to initialize OneFormer")
     
     def analyze_wrapper(image_path, blackspot_threshold, contrast_threshold, 
-                       enable_blackspot, enable_contrast, blackspot_view_type):
-        """Enhanced wrapper function for Gradio interface"""
+                       enable_blackspot, enable_contrast):
+        """Wrapper function for Gradio interface"""
         if image_path is None:
-            return None, None, None, None, None, "Please upload an image"
+            return None, None, None, None, "Please upload an image"
         
         results = app.analyze_image(
             image_path=image_path,
@@ -739,164 +550,106 @@ def create_gradio_interface():
         )
         
         if "error" in results:
-            return None, None, None, None, None, f"Error: {results['error']}"
+            return None, None, None, None, f"Error: {results['error']}"
         
         # Extract outputs
         seg_output = results['segmentation']['visualization'] if results['segmentation'] else None
-        
-        # Enhanced blackspot output selection
-        blackspot_output = None
-        blackspot_segmentation = None
-        if results['blackspot'] and 'enhanced_views' in results['blackspot']:
-            views = results['blackspot']['enhanced_views']
-            
-            # Select view based on user choice
-            if blackspot_view_type == "High Contrast":
-                blackspot_output = views['high_contrast_overlay']
-            elif blackspot_view_type == "Segmentation Only":
-                blackspot_output = views['segmentation_view']
-            elif blackspot_view_type == "Blackspots Only":
-                blackspot_output = views['blackspot_only']
-            elif blackspot_view_type == "Side by Side":
-                blackspot_output = views['side_by_side']
-            elif blackspot_view_type == "Annotated":
-                blackspot_output = views['annotated_view']
-            else:
-                blackspot_output = views['high_contrast_overlay']
-            
-            # Always provide segmentation view for the dedicated tab
-            blackspot_segmentation = views['segmentation_view']
-        
+        blackspot_output = results['blackspot']['visualization'] if results['blackspot'] else None
         contrast_output = results['contrast']['visualization'] if results['contrast'] else None
         
-        # Generate report
-        report = generate_analysis_report(results)
+        # Generate universal contrast report
+        if results['contrast']:
+            contrast_report = app.contrast_analyzer.generate_report(results['contrast'])
+        else:
+            contrast_report = "Contrast analysis not performed."
         
-        return seg_output, blackspot_output, blackspot_segmentation, contrast_output, report
+        # Generate full report
+        report = generate_comprehensive_report(results, contrast_report)
+        
+        return seg_output, blackspot_output, contrast_output, report
     
-    # Update the generate_analysis_report function
-    def generate_analysis_report(results: Dict) -> str:
-        """Generate enhanced analysis report text"""
-        report = ["# NeuroNest Analysis Report\n"]
+    def generate_comprehensive_report(results: Dict, contrast_report: str) -> str:
+        """Generate comprehensive analysis report"""
+        report = ["# 🧠 NeuroNest Analysis Report\n"]
+        report.append(f"*Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
         
         # Segmentation results
         if results['segmentation']:
             stats = results['statistics'].get('segmentation', {})
-            report.append(f"## 🎯 Semantic Segmentation")
-            report.append(f"- **Objects detected:** {stats.get('num_classes', 'N/A')}")
-            report.append(f"- **Image size:** {stats.get('image_size', 'N/A')}")
+            report.append("## 🎯 Object Segmentation")
+            report.append(f"- **Classes detected:** {stats.get('num_classes', 'N/A')}")
+            report.append(f"- **Resolution:** {stats.get('image_size', 'N/A')}")
             report.append("")
         
-        # Enhanced blackspot results
+        # Blackspot results
         if results['blackspot']:
             bs_stats = results['statistics'].get('blackspot', {})
-            report.append(f"## ⚫ Blackspot Detection")
+            report.append("## ⚫ Blackspot Detection (Floor Surfaces Only)")
             report.append(f"- **Floor area:** {bs_stats.get('floor_area_pixels', 0):,} pixels")
             report.append(f"- **Blackspot area:** {bs_stats.get('blackspot_area_pixels', 0):,} pixels")
             report.append(f"- **Coverage:** {bs_stats.get('coverage_percentage', 0):.2f}% of floor")
-            report.append(f"- **Individual blackspots:** {bs_stats.get('num_detections', 0)}")
-            report.append(f"- **Average confidence:** {bs_stats.get('avg_confidence', 0):.2f}")
+            report.append(f"- **Detections:** {bs_stats.get('num_detections', 0)}")
             
             # Risk assessment
             coverage = bs_stats.get('coverage_percentage', 0)
-            if coverage > 5:
-                report.append(f"- **⚠️ Risk Level:** HIGH - Significant blackspot coverage detected")
+            if coverage > 10:
+                report.append("- **⚠️ Risk:** CRITICAL - Immediate intervention required")
+            elif coverage > 5:
+                report.append("- **⚠️ Risk:** HIGH - Significant fall hazard")
             elif coverage > 1:
-                report.append(f"- **⚠️ Risk Level:** MEDIUM - Moderate blackspot coverage")
+                report.append("- **⚠️ Risk:** MEDIUM - Potential safety concern")
             elif coverage > 0:
-                report.append(f"- **✓ Risk Level:** LOW - Minimal blackspot coverage")
+                report.append("- **✓ Risk:** LOW - Minor concern")
             else:
-                report.append(f"- **✓ Risk Level:** NONE - No blackspots detected")
+                report.append("- **✓ Risk:** NONE - No blackspots detected")
             report.append("")
         
-        # Contrast analysis results (updated for universal analyzer)
-        if results['contrast']:
-            contrast_stats = results['statistics'].get('contrast', {})
-            report.append(f"## 🎨 Universal Contrast Analysis")
-            report.append(f"- **Adjacent pairs analyzed:** {results['contrast']['statistics'].get('analyzed_pairs', 0)}")
-            report.append(f"- **Total contrast issues:** {contrast_stats.get('total_issues', 0)}")
-            report.append(f"- **🔴 Critical:** {contrast_stats.get('critical_issues', 0)}")
-            report.append(f"- **🟠 High priority:** {contrast_stats.get('high_priority_issues', 0)}")
-            report.append(f"- **🟡 Medium priority:** {contrast_stats.get('medium_priority_issues', 0)}")
-            report.append(f"- **⚠️ Floor-object issues:** {contrast_stats.get('floor_object_issues', 0)}")
-            report.append("")
-            
-            # Add detailed issues
-            issues = results['contrast'].get('issues', [])
-            if issues:
-                # Group by severity
-                critical_issues = [i for i in issues if i['severity'] == 'critical']
-                high_issues = [i for i in issues if i['severity'] == 'high']
-                
-                if critical_issues:
-                    report.append("### 🔴 Critical Issues (Immediate Attention Required)")
-                    for issue in critical_issues[:5]:  # Show top 5
-                        cats = f"{issue['categories'][0]} ↔ {issue['categories'][1]}"
-                        ratio = issue['wcag_ratio']
-                        report.append(f"- **{cats}**: {ratio:.1f}:1 contrast ratio")
-                        if issue['is_floor_object']:
-                            report.append(f"  _⚠️ Object on floor - high visibility required!_")
-                    report.append("")
-                
-                if high_issues:
-                    report.append("### 🟠 High Priority Issues")
-                    for issue in high_issues[:3]:  # Show top 3
-                        cats = f"{issue['categories'][0]} ↔ {issue['categories'][1]}"
-                        ratio = issue['wcag_ratio']
-                        report.append(f"- **{cats}**: {ratio:.1f}:1 contrast ratio")
-                    report.append("")
+        # Universal contrast analysis
+        report.append("## 🎨 Universal Contrast Analysis")
+        report.append(contrast_report)
+        report.append("")
         
-        # Enhanced recommendations
-        report.append("## 📋 Recommendations")
+        # Recommendations
+        report.append("## 📋 Recommendations for Alzheimer's Care")
         
-        # Blackspot-specific recommendations
-        if results['blackspot']:
-            coverage = results['statistics'].get('blackspot', {}).get('coverage_percentage', 0)
-            if coverage > 0:
-                report.append("### Blackspot Mitigation")
-                report.append("- Remove or replace dark-colored floor materials in detected areas")
-                report.append("- Improve lighting in blackspot areas")
-                report.append("- Consider using light-colored rugs or mats to cover blackspots")
-                report.append("- Add visual cues like contrasting tape around problem areas")
-                report.append("")
+        has_issues = False
         
-        # Contrast-specific recommendations
-        contrast_issues = results['statistics'].get('contrast', {}).get('total_issues', 0)
-        if contrast_issues > 0:
-            report.append("### Contrast Improvements")
-            report.append("- Increase lighting in low-contrast areas")
-            report.append("- Use contrasting colors for furniture and floors")
-            report.append("- Add visual markers for important boundaries")
-            report.append("- Consider color therapy guidelines for dementia")
-            report.append("")
+        if results['blackspot'] and results['statistics']['blackspot']['coverage_percentage'] > 0:
+            has_issues = True
+            report.append("\n### Blackspot Mitigation:")
+            report.append("- Replace dark flooring materials with lighter alternatives")
+            report.append("- Install additional lighting in affected areas")
+            report.append("- Use light-colored rugs or runners to cover dark spots")
+            report.append("- Add contrasting tape or markers around blackspot perimeters")
         
-        if coverage == 0 and contrast_issues == 0:
-            report.append("✅ **Environment Assessment: EXCELLENT**")
-            report.append("No significant safety issues detected. This environment appears well-suited for individuals with Alzheimer's.")
+        if results['contrast'] and results['statistics']['contrast']['low_contrast_pairs'] > 0:
+            has_issues = True
+            report.append("\n### Contrast Improvements:")
+            report.append("- Paint furniture in colors that contrast with floors/walls")
+            report.append("- Add colored tape or markers to furniture edges")
+            report.append("- Install LED strip lighting under furniture edges")
+            report.append("- Use contrasting placemats, cushions, or covers")
+        
+        if not has_issues:
+            report.append("\n✅ **Excellent!** This environment appears well-optimized for individuals with Alzheimer's.")
+            report.append("No significant visual hazards detected.")
         
         return "\n".join(report)
     
-    # Create the interface with enhanced controls
-    title = "🧠 NeuroNest: Advanced Environment Analysis for Alzheimer's Care"
+    # Create the interface
+    title = "🧠 NeuroNest: AI-Powered Environment Safety Analysis"
     description = """
-    **Comprehensive analysis system for creating Alzheimer's-friendly environments**
+    **Advanced visual analysis for Alzheimer's and dementia care environments**
     
-    This application integrates:
-    - **Semantic Segmentation**: Identifies rooms, furniture, and objects
-    - **Enhanced Blackspot Detection**: Locates and visualizes dangerous black areas on floors
-    - **Contrast Analysis**: Evaluates color contrast for visual accessibility
+    This system provides:
+    - **Object Segmentation**: Identifies all room elements (floors, walls, furniture)
+    - **Floor-Only Blackspot Detection**: Locates dangerous dark areas on walking surfaces
+    - **Universal Contrast Analysis**: Evaluates visibility between ALL adjacent objects
+    
+    *Following WCAG 2.1 guidelines for visual accessibility*
     """
     
-    with gr.Blocks(
-        title=title,
-        css="""
-        .main-header { text-align: center; margin-bottom: 2rem; }
-        .analysis-section { border: 2px solid #f0f0f0; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
-        .critical-text { color: #ff0000; font-weight: bold; }
-        .high-text { color: #ff8800; font-weight: bold; }
-        .medium-text { color: #ffaa00; font-weight: bold; }
-        """
-    ) as interface:
+    with gr.Blocks(title=title, theme=gr.themes.Soft()) as interface:
         
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
@@ -908,14 +661,14 @@ def create_gradio_interface():
                 image_input = gr.Image(
                     label="📸 Upload Room Image",
                     type="filepath",
-                    height=300
+                    height=400
                 )
                 
                 # Analysis settings
-                with gr.Accordion("🔧 Analysis Settings", open=True):
+                with gr.Accordion("⚙️ Analysis Settings", open=True):
                     enable_blackspot = gr.Checkbox(
                         value=blackspot_ok,
-                        label="Enable Blackspot Detection",
+                        label="Enable Floor Blackspot Detection",
                         interactive=blackspot_ok
                     )
                     
@@ -924,29 +677,21 @@ def create_gradio_interface():
                         maximum=0.9,
                         value=0.5,
                         step=0.05,
-                        label="Blackspot Detection Threshold",
-                        visible=blackspot_ok
-                    )
-                    
-                    # NEW: Blackspot visualization options
-                    blackspot_view_type = gr.Radio(
-                        choices=["High Contrast", "Segmentation Only", "Blackspots Only", "Side by Side", "Annotated"],
-                        value="High Contrast",
-                        label="Blackspot Visualization Style",
+                        label="Detection Sensitivity",
                         visible=blackspot_ok
                     )
                     
                     enable_contrast = gr.Checkbox(
                         value=True,
-                        label="Enable Contrast Analysis"
+                        label="Enable Universal Contrast Analysis"
                     )
                     
                     contrast_threshold = gr.Slider(
-                        minimum=1.0,
-                        maximum=10.0,
+                        minimum=3.0,
+                        maximum=7.0,
                         value=4.5,
                         step=0.1,
-                        label="WCAG Contrast Threshold"
+                        label="WCAG Contrast Threshold (4.5:1 recommended)"
                     )
                 
                 # Analysis button
@@ -958,43 +703,34 @@ def create_gradio_interface():
             
             # Output Column
             with gr.Column(scale=2):
-                # Main display (Segmentation by default)
-                main_display = gr.Image(
-                    label="🎯 Object Detection & Segmentation",
-                    height=400,
-                    interactive=False
-                )
-                
-                # Enhanced analysis tabs
+                # Analysis tabs
                 with gr.Tabs():
                     with gr.Tab("📊 Analysis Report"):
                         analysis_report = gr.Markdown(
-                            value="Upload an image and click 'Analyze Environment' to see results.",
-                            elem_classes=["analysis-section"]
+                            value="Upload an image and click 'Analyze Environment' to begin."
+                        )
+                    
+                    with gr.Tab("🎯 Object Segmentation"):
+                        seg_display = gr.Image(
+                            label="Detected Objects",
+                            height=400,
+                            interactive=False
                         )
                     
                     if blackspot_ok:
-                        with gr.Tab("⚫ Blackspot Detection"):
+                        with gr.Tab("⚫ Floor Blackspots"):
                             blackspot_display = gr.Image(
-                                label="Blackspot Analysis (Selected View)",
-                                height=300,
-                                interactive=False
-                            )
-                        
-                        with gr.Tab("🔍 Blackspot Segmentation"):
-                            blackspot_segmentation_display = gr.Image(
-                                label="Pure Blackspot Segmentation",
-                                height=300,
+                                label="Blackspot Detection (Floors Only)",
+                                height=400,
                                 interactive=False
                             )
                     else:
                         blackspot_display = gr.Image(visible=False)
-                        blackspot_segmentation_display = gr.Image(visible=False)
                     
                     with gr.Tab("🎨 Contrast Analysis"):
                         contrast_display = gr.Image(
-                            label="Contrast Issues Visualization",
-                            height=300,
+                            label="Low Contrast Areas (All Objects)",
+                            height=400,
                             interactive=False
                         )
         
@@ -1006,59 +742,28 @@ def create_gradio_interface():
                 blackspot_threshold,
                 contrast_threshold,
                 enable_blackspot,
-                enable_contrast,
-                blackspot_view_type
+                enable_contrast
             ],
             outputs=[
-                main_display,
+                seg_display,
                 blackspot_display,
-                blackspot_segmentation_display,
                 contrast_display,
                 analysis_report
             ]
         )
         
-        # Example images (optional)
-        example_dir = Path("examples")
-        if example_dir.exists():
-            examples = [
-                [str(img), 0.5, 4.5, True, True, "High Contrast"] 
-                for img in example_dir.glob("*.jpg")
-            ]
-            
-            if examples:
-                gr.Examples(
-                    examples=examples[:3],  # Show max 3 examples
-                    inputs=[
-                        image_input,
-                        blackspot_threshold,
-                        contrast_threshold,
-                        enable_blackspot,
-                        enable_contrast,
-                        blackspot_view_type
-                    ],
-                    outputs=[
-                        main_display,
-                        blackspot_display,
-                        blackspot_segmentation_display,
-                        contrast_display,
-                        analysis_report
-                    ],
-                    fn=analyze_wrapper,
-                    label="🖼️ Example Images"
-                )
-        
         # Footer
         gr.Markdown("""
             ---
-            **NeuroNest** - Advanced AI for Alzheimer's-friendly environments  
-            *Helping create safer, more accessible spaces for cognitive health*
+            **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis  
+            *Creating safer environments for cognitive health through AI*
             """)
     
     return interface
 
-###############################
-# MAIN EXECUTION - FIXED
+
+########################################
+# MAIN EXECUTION
 ########################################
 
 if __name__ == "__main__":
@@ -1067,12 +772,10 @@ if __name__ == "__main__":
     
     try:
         interface = create_gradio_interface()
-        
-        # Fixed launch call - removed incompatible parameters
         interface.queue(max_size=10).launch(
             server_name="0.0.0.0",
             server_port=7860,
-            share=True
+            share=False
         )
     except Exception as e:
         logger.error(f"Failed to launch application: {e}")
