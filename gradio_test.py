@@ -661,7 +661,7 @@ def create_gradio_interface():
 
     title = "🧠 NeuroNest: AI-Powered Environment Safety Analysis"
     description = """
-    **Advanced visual analysis for Alzheimer's and dementia care environments**
+    **Advanced visual analysis for Alzheimer's and dementia care environments. Texas State CS && Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
 
     This system provides:
     - **Object Segmentation**: Identifies all room elements (floors, walls, furniture)
