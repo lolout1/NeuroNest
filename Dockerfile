@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y \
     python3.8 \
     python3.8-dev \
     python3.8-distutils \
-    python3-pip \
     git \
     wget \
     curl \
@@ -30,15 +29,15 @@ RUN apt-get update && apt-get install -y \
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.8 1 && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1
 
-# Install pip for python3.8
-RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
+# Install pip for Python 3.8 specifically
+RUN curl https://bootstrap.pypa.io/pip/3.8/get-pip.py -o get-pip.py && \
     python get-pip.py && \
     rm get-pip.py
 
 # Upgrade pip and install build tools
 RUN python -m pip install --upgrade pip==23.0.1 setuptools==59.5.0 wheel cython
 
-# Create user
+# Create user for HF Spaces
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
@@ -63,8 +62,8 @@ RUN pip install --user \
 # Install detectron2 for PyTorch 1.9 CPU
 RUN pip install --user detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
 
-# Install pycocotools separately with proper build dependencies
-RUN pip install --user "git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI"
+# Install pycocotools with pre-built wheel to avoid compilation issues
+RUN pip install --user pycocotools --no-build-isolation
 
 # Install other ML dependencies
 RUN pip install --user \
@@ -75,7 +74,7 @@ RUN pip install --user \
     tqdm==4.64.1 \
     imutils==0.5.4
 
-# Install Gradio and web dependencies
+# Install Gradio and web dependencies with compatible versions
 RUN pip install --user \
     gradio==3.35.2 \
     huggingface_hub==0.11.1 \
@@ -92,14 +91,14 @@ RUN pip install --user \
     gdown==4.5.4 \
     wget==3.2
 
-# Try NATTEN for CPU (optional)
+# Try NATTEN for CPU (optional - will continue if fails)
 RUN pip install --user natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
     echo "NATTEN installation failed - continuing without it"
 
 # Copy application files
 COPY --chown=user:user . /app
 
-# Set environment variables
+# Set environment variables for CPU-only operation
 ENV CUDA_VISIBLE_DEVICES=""
 ENV FORCE_CUDA="0"
 ENV OMP_NUM_THREADS=4
@@ -108,4 +107,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
-CMD ["python", "gradio_test.py"]
+CMD ["python", "app.py"]
