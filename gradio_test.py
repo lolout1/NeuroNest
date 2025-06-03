@@ -889,7 +889,6 @@ def create_gradio_interface():
     
     with gr.Blocks(
         title=title,
-        theme=gr.themes.Soft(primary_hue="orange", secondary_hue="blue"),
         css="""
         .main-header { text-align: center; margin-bottom: 2rem; }
         .analysis-section { border: 2px solid #f0f0f0; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
