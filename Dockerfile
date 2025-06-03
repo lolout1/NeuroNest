@@ -45,16 +45,19 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# Install PyTorch 1.9 CPU
+# Install PyTorch 1.9 CPU first
 RUN pip install --user torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
 
 # Install numpy first (required for other packages)
 RUN pip install --user numpy==1.21.6
 
-# Install core dependencies
+# Install core dependencies in order
 RUN pip install --user \
     Pillow==8.3.2 \
-    opencv-python==4.5.5.64 \
+    opencv-python==4.5.5.64
+
+# Install scientific computing dependencies
+RUN pip install --user \
     scipy==1.7.3 \
     scikit-image==0.19.3 \
     scikit-learn==1.0.2
@@ -62,10 +65,10 @@ RUN pip install --user \
 # Install detectron2 for PyTorch 1.9 CPU
 RUN pip install --user detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
 
-# Install pycocotools with pre-built wheel to avoid compilation issues
+# Install pycocotools separately to avoid compilation issues
 RUN pip install --user pycocotools --no-build-isolation
 
-# Install other ML dependencies
+# Install ML dependencies
 RUN pip install --user \
     timm==0.4.12 \
     einops==0.6.1 \
@@ -74,12 +77,19 @@ RUN pip install --user \
     tqdm==4.64.1 \
     imutils==0.5.4
 
-# Install Gradio and web dependencies with compatible versions
+# Install web framework dependencies with compatible versions
 RUN pip install --user \
-    gradio==3.35.2 \
-    huggingface_hub==0.11.1 \
+    httpx==0.23.0 \
+    httpcore==0.15.0 \
+    anyio==3.6.1 \
+    starlette==0.19.1 \
     fastapi==0.78.0 \
     uvicorn==0.18.2
+
+# Install Gradio and HuggingFace Hub with compatible versions
+RUN pip install --user \
+    huggingface_hub==0.8.1 \
+    gradio==3.1.7
 
 # Install remaining dependencies
 RUN pip install --user \
@@ -90,10 +100,6 @@ RUN pip install --user \
     inflect==6.0.4 \
     gdown==4.5.4 \
     wget==3.2
-
-# Try NATTEN for CPU (optional - will continue if fails)
-RUN pip install --user natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
-    echo "NATTEN installation failed - continuing without it"
 
 # Copy application files
 COPY --chown=user:user . /app
