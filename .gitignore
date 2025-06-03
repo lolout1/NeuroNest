@@ -9,7 +9,6 @@ build/
 dist/
 *.egg-info/
 .env
-.claude/
 oneformer/modeling/pixel_decoder/ops/build/
 oneformer/modeling/pixel_decoder/ops/dist/
 oneformer/modeling/pixel_decoder/ops/*.egg-info/
