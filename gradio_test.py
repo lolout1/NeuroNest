@@ -67,11 +67,15 @@ ONEFORMER_CONFIG = {
     }
 }
 
+# Blackspot model configuration for HF Spaces
+BLACKSPOT_MODEL_REPO = "sww35/neuronest-blackspot"  # Update with your HF repo
+BLACKSPOT_MODEL_FILE = "model_0004999.pth"
+
 ########################################
 # IMPORT UNIVERSAL CONTRAST ANALYZER
 ########################################
 
-from universal_contrast_analyzer import UniversalContrastAnalyzer
+from utils.universal_contrast_analyzer import UniversalContrastAnalyzer
 
 ########################################
 # ONEFORMER INTEGRATION
@@ -168,15 +172,44 @@ class OneFormerManager:
 class ImprovedBlackspotDetector:
     """Enhanced blackspot detector that only detects on floor surfaces"""
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str = None):
         self.model_path = model_path
         self.predictor = None
         # Expanded floor-related classes in ADE20K
         self.floor_classes = [3, 4, 13, 28, 78]  # floor, wood floor, rug, carpet, mat
 
+    def download_model(self) -> str:
+        """Download blackspot model from HuggingFace"""
+        try:
+            # Try to download from HF repo
+            model_path = hf_hub_download(
+                repo_id=BLACKSPOT_MODEL_REPO,
+                filename=BLACKSPOT_MODEL_FILE
+            )
+            logger.info(f"Downloaded blackspot model to: {model_path}")
+            return model_path
+        except Exception as e:
+            logger.warning(f"Could not download blackspot model from HF: {e}")
+            
+            # Fallback to local path
+            local_path = f"./output_floor_blackspot/{BLACKSPOT_MODEL_FILE}"
+            if os.path.exists(local_path):
+                logger.info(f"Using local blackspot model: {local_path}")
+                return local_path
+            
+            return None
+
     def initialize(self, threshold: float = 0.5) -> bool:
         """Initialize MaskRCNN model"""
         try:
+            # Get model path
+            if self.model_path is None:
+                self.model_path = self.download_model()
+                
+            if self.model_path is None:
+                logger.error("No blackspot model available")
+                return False
+            
             cfg = get_cfg()
             cfg.merge_from_file(
                 model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
@@ -363,18 +396,19 @@ class NeuroNestApp:
         self.contrast_analyzer = UniversalContrastAnalyzer(wcag_threshold=4.5)
         self.initialized = False
 
-    def initialize(self, blackspot_model_path: str = "./output_floor_blackspot/model_0004999.pth"):
+    def initialize(self):
         """Initialize all components"""
         logger.info("Initializing NeuroNest application...")
 
         oneformer_success = self.oneformer.initialize()
 
+        # Initialize blackspot detector with HF model
         blackspot_success = False
-        if os.path.exists(blackspot_model_path):
-            self.blackspot_detector = ImprovedBlackspotDetector(blackspot_model_path)
+        try:
+            self.blackspot_detector = ImprovedBlackspotDetector()
             blackspot_success = self.blackspot_detector.initialize()
-        else:
-            logger.warning(f"Blackspot model not found at {blackspot_model_path}")
+        except Exception as e:
+            logger.warning(f"Could not initialize blackspot detector: {e}")
 
         self.initialized = oneformer_success
         return oneformer_success, blackspot_success
@@ -595,6 +629,25 @@ def create_gradio_interface():
         if results['contrast'] and results['statistics']['contrast']['low_contrast_pairs'] > 0:
             has_issues = True
             report.append("\n### Contrast Improvements:")
+            
+            # Get specific recommendations based on issue types
+            contrast_issues = results['contrast']['issues']
+            critical_issues = [i for i in contrast_issues if i['severity'] == 'critical']
+            high_issues = [i for i in contrast_issues if i['severity'] == 'high']
+            
+            if critical_issues:
+                report.append("\n**CRITICAL - Immediate attention required:**")
+                for issue in critical_issues[:3]:
+                    cat1, cat2 = issue['categories']
+                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Increase contrast to 7:1 minimum")
+            
+            if high_issues:
+                report.append("\n**HIGH PRIORITY:**")
+                for issue in high_issues[:3]:
+                    cat1, cat2 = issue['categories']
+                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Increase contrast to 4.5:1 minimum")
+            
+            report.append("\n**General recommendations:**")
             report.append("- Paint furniture in colors that contrast with floors/walls")
             report.append("- Add colored tape or markers to furniture edges")
             report.append("- Install LED strip lighting under furniture edges")
@@ -621,6 +674,13 @@ def create_gradio_interface():
     with gr.Blocks() as interface:
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
+
+        # Information about model availability
+        if not blackspot_ok:
+            gr.Markdown("""
+            ⚠️ **Note:** Blackspot detection model not available. 
+            To enable blackspot detection, upload the model to HuggingFace or ensure it's in the local directory.
+            """)
 
         # Top row: toggles and sliders
         with gr.Row():
@@ -730,4 +790,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to launch application: {e}")
         raise
-

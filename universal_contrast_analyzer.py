@@ -83,17 +83,18 @@ class UniversalContrastAnalyzer:
         """Calculate WCAG 2.0 contrast ratio between two colors"""
         def relative_luminance(rgb):
             # Normalize to 0-1
-            rgb_norm = rgb / 255.0
+            rgb_norm = np.array(rgb) / 255.0
             
             # Apply gamma correction (linearize)
             rgb_linear = np.where(
                 rgb_norm <= 0.03928,
                 rgb_norm / 12.92,
-                ((rgb_norm + 0.055) / 1.055) ** 2.4
+                np.power((rgb_norm + 0.055) / 1.055, 2.4)
             )
             
             # Calculate luminance using ITU-R BT.709 coefficients
-            return np.dot(rgb_linear, [0.2126, 0.7152, 0.0722])
+            # L = 0.2126 * R + 0.7152 * G + 0.0722 * B
+            return 0.2126 * rgb_linear[0] + 0.7152 * rgb_linear[1] + 0.0722 * rgb_linear[2]
         
         lum1 = relative_luminance(color1)
         lum2 = relative_luminance(color2)
@@ -102,27 +103,37 @@ class UniversalContrastAnalyzer:
         lighter = max(lum1, lum2)
         darker = min(lum1, lum2)
         
-        return (lighter + 0.05) / (darker + 0.05)
+        # Calculate contrast ratio
+        contrast_ratio = (lighter + 0.05) / (darker + 0.05)
+        
+        return contrast_ratio
     
     def calculate_hue_difference(self, color1: np.ndarray, color2: np.ndarray) -> float:
         """Calculate hue difference in degrees (0-180)"""
-        # Convert RGB to HSV
-        hsv1 = cv2.cvtColor(color1.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
-        hsv2 = cv2.cvtColor(color2.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
+        # Convert RGB to HSV using colorsys for accuracy
+        rgb1 = color1 / 255.0
+        rgb2 = color2 / 255.0
         
-        # Calculate circular hue difference (0-180 range in OpenCV)
-        hue_diff = abs(hsv1[0] - hsv2[0])
+        hsv1 = colorsys.rgb_to_hsv(rgb1[0], rgb1[1], rgb1[2])
+        hsv2 = colorsys.rgb_to_hsv(rgb2[0], rgb2[1], rgb2[2])
+        
+        # Calculate circular hue difference (0-1 range converted to 0-180)
+        hue_diff = abs(hsv1[0] - hsv2[0]) * 180
         if hue_diff > 90:
             hue_diff = 180 - hue_diff
             
         return hue_diff
     
     def calculate_saturation_difference(self, color1: np.ndarray, color2: np.ndarray) -> float:
-        """Calculate saturation difference (0-255)"""
-        hsv1 = cv2.cvtColor(color1.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
-        hsv2 = cv2.cvtColor(color2.reshape(1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV)[0, 0]
+        """Calculate saturation difference (0-100)"""
+        rgb1 = color1 / 255.0
+        rgb2 = color2 / 255.0
         
-        return abs(int(hsv1[1]) - int(hsv2[1]))
+        hsv1 = colorsys.rgb_to_hsv(rgb1[0], rgb1[1], rgb1[2])
+        hsv2 = colorsys.rgb_to_hsv(rgb2[0], rgb2[1], rgb2[2])
+        
+        # Return saturation difference as percentage
+        return abs(hsv1[1] - hsv2[1]) * 100
     
     def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray, 
                              sample_size: int = 1000) -> np.ndarray:
@@ -239,13 +250,15 @@ class UniversalContrastAnalyzer:
             # Critical: require 7:1 contrast ratio
             if wcag_ratio < 7.0:
                 return False, 'critical'
-            if hue_diff < 30 and sat_diff < 50:
+            # Also check perceptual differences
+            if wcag_ratio < 10.0 and hue_diff < 30 and sat_diff < 50:
                 return False, 'critical'
                 
         elif relationship in high_priority_pairs:
             # High priority: require 4.5:1 contrast ratio
             if wcag_ratio < 4.5:
                 return False, 'high'
+            # Also check perceptual differences
             if wcag_ratio < 7.0 and hue_diff < 20 and sat_diff < 40:
                 return False, 'high'
                 
@@ -253,6 +266,7 @@ class UniversalContrastAnalyzer:
             # Standard: require 3:1 contrast ratio minimum
             if wcag_ratio < 3.0:
                 return False, 'medium'
+            # Also check perceptual differences
             if wcag_ratio < 4.5 and hue_diff < 15 and sat_diff < 30:
                 return False, 'medium'
         
@@ -440,12 +454,21 @@ class UniversalContrastAnalyzer:
                 severity = issue['severity'].upper()
                 
                 report.append(f"{i}. [{severity}] {cat1} ↔ {cat2}")
-                report.append(f"   - WCAG Contrast Ratio: {wcag:.2f}:1 (minimum: 4.5:1)")
+                report.append(f"   - WCAG Contrast Ratio: {wcag:.2f}:1")
+                
+                # Add recommended values based on severity
+                if severity == 'CRITICAL':
+                    report.append(f"   - Required: 7:1 minimum")
+                elif severity == 'HIGH':
+                    report.append(f"   - Required: 4.5:1 minimum")
+                else:
+                    report.append(f"   - Required: 3:1 minimum")
+                    
                 report.append(f"   - Hue Difference: {hue_diff:.1f}° (recommended: >30°)")
-                report.append(f"   - Saturation Difference: {sat_diff} (recommended: >50)")
+                report.append(f"   - Saturation Difference: {sat_diff:.1f}% (recommended: >50%)")
                 
                 if issue['is_floor_object']:
-                    report.append("   - ⚠️ Object on floor - requires high visibility!")
+                    report.append("   - ⚠️ Floor-object boundary - high visibility required!")
                 
                 report.append(f"   - Boundary size: {issue['boundary_pixels']} pixels")
                 report.append("")
