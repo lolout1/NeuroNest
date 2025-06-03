@@ -100,6 +100,8 @@ RUN pip install --user \
     regex==2022.10.31 \
     ftfy==6.1.1 \
     wandb \
+    diffdist \
+    tqdm \
     inflect==6.0.4 \
     gdown==4.5.4 \
     wget==3.2
