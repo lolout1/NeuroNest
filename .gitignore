@@ -13,5 +13,4 @@ dist/
 oneformer/modeling/pixel_decoder/ops/build/
 oneformer/modeling/pixel_decoder/ops/dist/
 oneformer/modeling/pixel_decoder/ops/*.egg-info/
-output_floor_blackspot/
 environment.yml
