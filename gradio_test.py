@@ -580,12 +580,25 @@ def create_gradio_interface():
         else:
             contrast_report = "Contrast analysis not performed."
 
+        # Generate blackspot analysis report
+        if results['blackspot']:
+            bs = results['blackspot']
+            blackspot_report = (
+                f"**Floor Area:** {bs['floor_area']:,} pixels  \n"
+                f"**Blackspot Area:** {bs['blackspot_area']:,} pixels  \n"
+                f"**Coverage:** {bs['coverage_percentage']:.2f}%  \n"
+                f"**Detections:** {bs['num_detections']}  \n"
+                f"**Average Confidence:** {bs['avg_confidence']:.2f}"
+            )
+        else:
+            blackspot_report = "Blackspot analysis not performed."
+
         # Generate full report
-        report = generate_comprehensive_report(results, contrast_report)
+        report = generate_comprehensive_report(results, contrast_report, blackspot_report)
 
         return seg_output, blackspot_output, contrast_output, report
 
-    def generate_comprehensive_report(results: Dict, contrast_report: str) -> str:
+    def generate_comprehensive_report(results: Dict, contrast_report: str, blackspot_report: str) -> str:
         """Generate comprehensive analysis report"""
         report = ["# 🧠 NeuroNest Analysis Report\n"]
         report.append(f"*Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
@@ -599,27 +612,9 @@ def create_gradio_interface():
             report.append("")
 
         # Blackspot results
-        if results['blackspot']:
-            bs_stats = results['statistics'].get('blackspot', {})
-            report.append("## ⚫ Blackspot Detection (Floor Surfaces Only)")
-            report.append(f"- **Floor area:** {bs_stats.get('floor_area_pixels', 0):,} pixels")
-            report.append(f"- **Blackspot area:** {bs_stats.get('blackspot_area_pixels', 0):,} pixels")
-            report.append(f"- **Coverage:** {bs_stats.get('coverage_percentage', 0):.2f}% of floor")
-            report.append(f"- **Detections:** {bs_stats.get('num_detections', 0)}")
-
-            # Risk assessment
-            coverage = bs_stats.get('coverage_percentage', 0)
-            if coverage > 10:
-                report.append("- **⚠️ Risk:** CRITICAL - Immediate intervention required")
-            elif coverage > 5:
-                report.append("- **⚠️ Risk:** HIGH - Significant fall hazard")
-            elif coverage > 1:
-                report.append("- **⚠️ Risk:** MEDIUM - Potential safety concern")
-            elif coverage > 0:
-                report.append("- **✓ Risk:** LOW - Minor concern")
-            else:
-                report.append("- **✓ Risk:** NONE - No blackspots detected")
-            report.append("")
+        report.append("## ⚫ Blackspot Analysis")
+        report.append(blackspot_report)
+        report.append("")
 
         # Universal contrast analysis
         report.append("## 🎨 Universal Contrast Analysis")
@@ -671,87 +666,70 @@ def create_gradio_interface():
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
 
+        # Top row: toggles and sliders
         with gr.Row():
-            # Input Column
-            with gr.Column():
-                # Image upload
+            enable_blackspot = gr.Checkbox(
+                value=blackspot_ok,
+                label="Enable Floor Blackspot Detection",
+                interactive=blackspot_ok
+            )
+            blackspot_threshold = gr.Slider(
+                minimum=0.1,
+                maximum=0.9,
+                value=0.5,
+                step=0.05,
+                label="Blackspot Sensitivity",
+                visible=blackspot_ok
+            )
+            enable_contrast = gr.Checkbox(
+                value=True,
+                label="Enable Universal Contrast Analysis"
+            )
+            contrast_threshold = gr.Slider(
+                minimum=3.0,
+                maximum=7.0,
+                value=4.5,
+                step=0.1,
+                label="WCAG Contrast Threshold"
+            )
+
+        # Next row: image upload and analyze button
+        with gr.Row():
+            with gr.Column(scale=1):
                 image_input = gr.Image(
                     label="📸 Upload Room Image",
                     type="filepath",
-                    height=400
+                    height=300
                 )
-
-                # Settings header (Accordion not available in 3.1.7)
-                gr.Markdown("### ⚙️ Analysis Settings")
-
-                # Analysis settings
-                enable_blackspot = gr.Checkbox(
-                    value=blackspot_ok,
-                    label="Enable Floor Blackspot Detection",
-                    interactive=blackspot_ok
-                )
-
-                blackspot_threshold = gr.Slider(
-                    minimum=0.1,
-                    maximum=0.9,
-                    value=0.5,
-                    step=0.05,
-                    label="Detection Sensitivity",
-                    visible=blackspot_ok
-                )
-
-                enable_contrast = gr.Checkbox(
-                    value=True,
-                    label="Enable Universal Contrast Analysis"
-                )
-
-                contrast_threshold = gr.Slider(
-                    minimum=3.0,
-                    maximum=7.0,
-                    value=4.5,
-                    step=0.1,
-                    label="WCAG Contrast Threshold (4.5:1 recommended)"
-                )
-
-                # Analysis button
+            with gr.Column(scale=1, min_width=150):
                 analyze_button = gr.Button(
                     "🔍 Analyze Environment",
-                    variant="primary",
-                    size="lg"
+                    variant="primary"
                 )
 
-            # Output Column
-            with gr.Column():
-                # Analysis tabs
-                with gr.Tabs():
-                    with gr.TabItem("📊 Analysis Report"):
-                        analysis_report = gr.Markdown(
-                            value="Upload an image and click 'Analyze Environment' to begin."
-                        )
+        # Next row: segmented, blackspot, and contrast images side by side
+        with gr.Row():
+            seg_display = gr.Image(
+                label="🎯 Segmented Objects",
+                height=250,
+                interactive=False
+            )
+            blackspot_display = gr.Image(
+                label="⚫ Blackspot Detection",
+                height=250,
+                interactive=False,
+                visible=blackspot_ok
+            )
+            contrast_display = gr.Image(
+                label="🎨 Contrast Analysis",
+                height=250,
+                interactive=False
+            )
 
-                    with gr.TabItem("🎯 Object Segmentation"):
-                        seg_display = gr.Image(
-                            label="Detected Objects",
-                            height=400,
-                            interactive=False
-                        )
-
-                    if blackspot_ok:
-                        with gr.TabItem("⚫ Floor Blackspots"):
-                            blackspot_display = gr.Image(
-                                label="Blackspot Detection (Floors Only)",
-                                height=400,
-                                interactive=False
-                            )
-                    else:
-                        blackspot_display = gr.Image(visible=False)
-
-                    with gr.TabItem("🎨 Contrast Analysis"):
-                        contrast_display = gr.Image(
-                            label="Low Contrast Areas (All Objects)",
-                            height=400,
-                            interactive=False
-                        )
+        # Bottom: analysis report always visible
+        analysis_report = gr.Markdown(
+            value="Upload an image and click 'Analyze Environment' to begin."
+        )
 
         # Connect the interface
         analyze_button.click(
@@ -774,7 +752,7 @@ def create_gradio_interface():
         # Footer
         gr.Markdown("""
             ---
-            **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis
+            **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis  
             *Creating safer environments for cognitive health through AI*
             """)
 
