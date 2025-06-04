@@ -9,7 +9,8 @@ build/
 dist/
 *.egg-info/
 .env
-oneformer/modeling/pixel_decoder/ops/build/
-oneformer/modeling/pixel_decoder/ops/dist/
-oneformer/modeling/pixel_decoder/ops/*.egg-info/
+oneformer/
+output_floor_blackspot/
 environment.yml
+NeuroNest/
+*.jar
