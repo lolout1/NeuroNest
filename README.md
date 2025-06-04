@@ -7,6 +7,7 @@ sdk: docker
 app_file: app.py
 pinned: false
 ---
+https://huggingface.co/spaces/lolout1/NeuroNest
 
 # NeuroNest: AI Framework for Alzheimer's-Friendly Environment Assessment
 
