@@ -49,7 +49,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CPU_DEVICE = torch.device("cpu")
 torch.set_num_threads(4)
 
-# ADE20K class mappings for floor detection
+# ADE20K class mappings for floor detection - COMPREHENSIVE LIST
 FLOOR_CLASSES = {
     'floor': [3, 4, 13],  # floor, wood floor, rug
     'carpet': [28],       # carpet
@@ -170,13 +170,26 @@ class OneFormerManager:
 ########################################
 
 class ImprovedBlackspotDetector:
-    """Enhanced blackspot detector that only detects on floor surfaces"""
+    """Enhanced blackspot detector that ONLY detects on floor surfaces"""
 
     def __init__(self, model_path: str = None):
         self.model_path = model_path
         self.predictor = None
-        # Expanded floor-related classes in ADE20K
+        # STRICT floor-related classes in ADE20K - ONLY walking surfaces
         self.floor_classes = [3, 4, 13, 28, 78]  # floor, wood floor, rug, carpet, mat
+        # Explicitly exclude these classes
+        self.excluded_classes = [
+            5,    # ceiling
+            7,    # bed
+            10,   # sofa
+            15,   # table
+            19,   # chair
+            23,   # cabinet
+            30,   # desk
+            33,   # counter
+            34,   # stool
+            36,   # bench
+        ]
 
     def download_model(self) -> str:
         """Download blackspot model from HuggingFace"""
@@ -190,13 +203,13 @@ class ImprovedBlackspotDetector:
             return model_path
         except Exception as e:
             logger.warning(f"Could not download blackspot model from HF: {e}")
-            
+
             # Fallback to local path
             local_path = f"./output_floor_blackspot/{BLACKSPOT_MODEL_FILE}"
             if os.path.exists(local_path):
                 logger.info(f"Using local blackspot model: {local_path}")
                 return local_path
-            
+
             return None
 
     def initialize(self, threshold: float = 0.5) -> bool:
@@ -205,11 +218,11 @@ class ImprovedBlackspotDetector:
             # Get model path
             if self.model_path is None:
                 self.model_path = self.download_model()
-                
+
             if self.model_path is None:
                 logger.error("No blackspot model available")
                 return False
-            
+
             cfg = get_cfg()
             cfg.merge_from_file(
                 model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
@@ -232,9 +245,9 @@ class ImprovedBlackspotDetector:
         blackspot_mask: np.ndarray,
         segmentation: np.ndarray,
         floor_mask: np.ndarray,
-        overlap_threshold: float = 0.8
+        overlap_threshold: float = 0.9  # INCREASED threshold for stricter detection
     ) -> bool:
-        """Check if a blackspot is actually on a floor surface"""
+        """STRICTLY check if a blackspot is actually on a floor surface"""
         if np.sum(blackspot_mask) == 0:
             return False
 
@@ -249,12 +262,23 @@ class ImprovedBlackspotDetector:
         if len(blackspot_pixels) == 0:
             return False
 
+        # Check if ANY excluded class pixels are in the blackspot
         unique_classes, counts = np.unique(blackspot_pixels, return_counts=True)
+        for excluded_class in self.excluded_classes:
+            if excluded_class in unique_classes:
+                # If more than 5% of pixels belong to excluded class, reject
+                excluded_ratio = counts[unique_classes == excluded_class][0] / len(blackspot_pixels)
+                if excluded_ratio > 0.05:
+                    logger.debug(f"Rejected blackspot with {excluded_ratio:.2%} pixels on excluded class {excluded_class}")
+                    return False
+
+        # Verify floor pixels dominate
         floor_pixel_count = sum(
-            counts[unique_classes == cls] for cls in self.floor_classes if cls in unique_classes
+            counts[unique_classes == cls][0] if cls in unique_classes else 0 
+            for cls in self.floor_classes
         )
         floor_ratio = floor_pixel_count / len(blackspot_pixels)
-        return floor_ratio > 0.7  # At least 70% on floor classes
+        return floor_ratio > 0.85  # INCREASED to 85% floor pixels required
 
     def filter_non_floor_blackspots(
         self,
@@ -262,7 +286,7 @@ class ImprovedBlackspotDetector:
         segmentation: np.ndarray,
         floor_mask: np.ndarray
     ) -> List[np.ndarray]:
-        """Filter out blackspots that are not on floor surfaces"""
+        """STRICTLY filter out blackspots that are not on floor surfaces"""
         filtered_masks = []
         for mask in blackspot_masks:
             if self.is_on_floor_surface(mask, segmentation, floor_mask):
@@ -277,7 +301,7 @@ class ImprovedBlackspotDetector:
         segmentation: np.ndarray,
         floor_prior: Optional[np.ndarray] = None
     ) -> Dict:
-        """Detect blackspots only on floor surfaces"""
+        """Detect blackspots ONLY on floor surfaces with strict filtering"""
         if self.predictor is None:
             raise RuntimeError("Blackspot detector not initialized")
 
@@ -322,6 +346,7 @@ class ImprovedBlackspotDetector:
             for cls in self.floor_classes:
                 floor_mask |= (segmentation == cls)
 
+        # STRICT filtering of blackspots
         filtered_blackspot_masks = self.filter_non_floor_blackspots(
             blackspot_masks, segmentation, floor_mask
         )
@@ -356,12 +381,15 @@ class ImprovedBlackspotDetector:
         """Create clear visualization of blackspots on floors only"""
         vis = image.copy()
 
+        # Show floor areas in semi-transparent green
         floor_overlay = vis.copy()
         floor_overlay[floor_mask] = [0, 255, 0]
         vis = cv2.addWeighted(vis, 0.7, floor_overlay, 0.3, 0)
 
+        # Show blackspots in red
         vis[blackspot_mask] = [255, 0, 0]
 
+        # Draw contours around blackspots
         blackspot_contours, _ = cv2.findContours(
             blackspot_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -536,11 +564,11 @@ class NeuroNestApp:
         return stats
 
 ########################################
-# GRADIO INTERFACE
+# GRADIO INTERFACE (COMPATIBLE WITH 3.1.7)
 ########################################
 
 def create_gradio_interface():
-    """Create the Gradio interface"""
+    """Create the Gradio interface compatible with version 3.1.7"""
 
     app = NeuroNestApp()
     oneformer_ok, blackspot_ok = app.initialize()
@@ -596,7 +624,8 @@ def create_gradio_interface():
 
     def generate_comprehensive_report(results: Dict, contrast_report: str, blackspot_report: str) -> str:
         """Generate comprehensive analysis report"""
-        report = ["# 🧠 NeuroNest Analysis Report\n"]
+        report = []
+        report.append("# 🧠 NeuroNest Analysis Report\n")
         report.append(f"*Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
 
         if results['segmentation']:
@@ -606,11 +635,11 @@ def create_gradio_interface():
             report.append(f"- **Resolution:** {stats.get('image_size', 'N/A')}")
             report.append("")
 
-        report.append("## ⚫ Blackspot Analysis")
+        report.append("## ⚫ Blackspot Analysis (Floor Surfaces Only)")
         report.append(blackspot_report)
         report.append("")
 
-        report.append("## 🎨 Universal Contrast Analysis")
+        report.append("## 🎨 Universal Contrast Analysis (All Adjacent Objects)")
         report.append(contrast_report)
         report.append("")
 
@@ -621,8 +650,8 @@ def create_gradio_interface():
         if results['blackspot'] and results['statistics']['blackspot']['coverage_percentage'] > 0:
             has_issues = True
             report.append("\n### Blackspot Mitigation:")
-            report.append("- Replace dark flooring materials with lighter alternatives")
-            report.append("- Install additional lighting in affected areas")
+            report.append("- Replace dark flooring materials with lighter alternatives (min 70% luminance)")
+            report.append("- Install 3000+ lumen LED lighting in affected areas")
             report.append("- Use light-colored rugs or runners to cover dark spots")
             report.append("- Add contrasting tape or markers around blackspot perimeters")
 
@@ -639,19 +668,24 @@ def create_gradio_interface():
                 report.append("\n**CRITICAL - Immediate attention required:**")
                 for issue in critical_issues[:3]:
                     cat1, cat2 = issue['categories']
-                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Increase contrast to 7:1 minimum")
+                    wcag = issue['wcag_ratio']
+                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Current {wcag:.1f}:1, Need 7:1 minimum")
+                    report.append(f"  - Hue difference: {issue['hue_difference']:.0f}° (need >30°)")
+                    report.append(f"  - Saturation difference: {issue['saturation_difference']:.0f}% (need >50%)")
             
             if high_issues:
                 report.append("\n**HIGH PRIORITY:**")
                 for issue in high_issues[:3]:
                     cat1, cat2 = issue['categories']
-                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Increase contrast to 4.5:1 minimum")
+                    wcag = issue['wcag_ratio']
+                    report.append(f"- {cat1.title()} ↔ {cat2.title()}: Current {wcag:.1f}:1, Need 4.5:1 minimum")
             
             report.append("\n**General recommendations:**")
-            report.append("- Paint furniture in colors that contrast with floors/walls")
-            report.append("- Add colored tape or markers to furniture edges")
-            report.append("- Install LED strip lighting under furniture edges")
-            report.append("- Use contrasting placemats, cushions, or covers")
+            report.append("- Use warm colors (red, yellow, orange) for important objects")
+            report.append("- Maintain 70% luminance difference between adjacent surfaces")
+            report.append("- Avoid similar hues - ensure 30+ degree separation on color wheel")
+            report.append("- Use high saturation colors, avoid pastels or muted tones")
+            report.append("- Add textured surfaces to supplement color contrast")
 
         if not has_issues:
             report.append("\n✅ **Excellent!** This environment appears well-optimized for individuals with Alzheimer's.")
@@ -661,17 +695,20 @@ def create_gradio_interface():
 
     title = "🧠 NeuroNest: AI-Powered Environment Safety Analysis"
     description = """
-    **Advanced visual analysis for Alzheimer's and dementia care environments. Texas State CS && Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
+    **Advanced visual analysis for Alzheimer's and dementia care environments.**
+    
+    **Texas State CS & Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
 
     This system provides:
     - **Object Segmentation**: Identifies all room elements (floors, walls, furniture)
-    - **Floor-Only Blackspot Detection**: Locates dangerous dark areas on walking surfaces
+    - **Floor-Only Blackspot Detection**: Locates dangerous dark areas ONLY on walking surfaces
     - **Universal Contrast Analysis**: Evaluates visibility between ALL adjacent objects
 
-    *Following WCAG 2.1 guidelines for visual accessibility*
+    *Following WCAG 2.1 guidelines and dementia-specific visual accessibility standards*
     """
 
-    with gr.Blocks() as interface:
+    # Create interface compatible with Gradio 3.1.7
+    with gr.Blocks(title="NeuroNest") as interface:
         gr.Markdown(f"# {title}")
         gr.Markdown(description)
 
@@ -682,71 +719,119 @@ def create_gradio_interface():
             To enable blackspot detection, upload the model to HuggingFace or ensure it's in the local directory.
             """)
 
-        # Top row: toggles and sliders
+        # Create two columns using Row for controls
         with gr.Row():
-            enable_blackspot = gr.Checkbox(
-                value=blackspot_ok,
-                label="Enable Floor Blackspot Detection",
-                interactive=blackspot_ok
-            )
-            blackspot_threshold = gr.Slider(
-                minimum=0.1,
-                maximum=0.9,
-                value=0.5,
-                step=0.05,
-                label="Blackspot Sensitivity",
-                visible=blackspot_ok
-            )
-            enable_contrast = gr.Checkbox(
-                value=True,
-                label="Enable Universal Contrast Analysis"
-            )
-            contrast_threshold = gr.Slider(
-                minimum=3.0,
-                maximum=7.0,
-                value=4.5,
-                step=0.1,
-                label="WCAG Contrast Threshold"
-            )
+            with gr.Column():
+                gr.Markdown("### Detection Options")
+                enable_blackspot = gr.Checkbox(
+                    value=blackspot_ok,
+                    label="Enable Floor Blackspot Detection",
+                    interactive=blackspot_ok
+                )
+                blackspot_threshold = gr.Slider(
+                    minimum=0.1,
+                    maximum=0.9,
+                    value=0.5,
+                    step=0.05,
+                    label="Blackspot Sensitivity",
+                    visible=blackspot_ok
+                )
+            
+            with gr.Column():
+                gr.Markdown("### Contrast Analysis")
+                enable_contrast = gr.Checkbox(
+                    value=True,
+                    label="Enable Universal Contrast Analysis"
+                )
+                contrast_threshold = gr.Slider(
+                    minimum=3.0,
+                    maximum=7.0,
+                    value=4.5,
+                    step=0.1,
+                    label="WCAG Contrast Threshold"
+                )
 
-        # Next row: image upload and analyze button
+        # Image upload and analyze button
         with gr.Row():
             with gr.Column():
                 image_input = gr.Image(
                     label="📸 Upload Room Image",
-                    type="filepath",
-                    height=300
+                    type="filepath"
                 )
-            with gr.Column():
                 analyze_button = gr.Button(
                     "🔍 Analyze Environment",
                     variant="primary"
                 )
 
-        # Next row: segmented, blackspot, and contrast images side by side
+        # Results display
+        gr.Markdown("## Analysis Results")
+        
         with gr.Row():
             seg_display = gr.Image(
                 label="🎯 Segmented Objects",
-                height=250,
                 interactive=False
             )
-            blackspot_display = gr.Image(
-                label="⚫ Blackspot Detection",
-                height=250,
-                interactive=False,
-                visible=blackspot_ok
-            )
+            
+        if blackspot_ok:
+            with gr.Row():
+                blackspot_display = gr.Image(
+                    label="⚫ Blackspot Detection (Floor Only)",
+                    interactive=False
+                )
+        else:
+            blackspot_display = gr.Image(visible=False)
+            
+        with gr.Row():
             contrast_display = gr.Image(
-                label="🎨 Contrast Analysis",
-                height=250,
+                label="🎨 Contrast Analysis (All Adjacent Objects)",
                 interactive=False
             )
 
-        # Bottom: analysis report always visible
+        # Analysis report
+        gr.Markdown("## Detailed Analysis Report")
         analysis_report = gr.Markdown(
             value="Upload an image and click 'Analyze Environment' to begin."
         )
 
+        # Additional information
+        with gr.Accordion("📚 Understanding the Analysis", open=False):
+            gr.Markdown("""
+            ### Color Contrast Guidelines for Alzheimer's Care:
+            
+            **WCAG Contrast Requirements:**
+            - **3:1** - Absolute minimum for large graphics
+            - **4.5:1** - Standard for normal visibility
+            - **7:1** - Enhanced for critical areas (stairs, doors)
+            
+            **Additional Perceptual Requirements:**
+            - **Hue Difference**: >30° on color wheel
+            - **Saturation Difference**: >50% for clear distinction
+            - **Luminance Difference**: >70% between surfaces
+            
+            **Priority Areas:**
+            1. **Critical**: Floor-stairs, floor-door, wall-stairs
+            2. **High**: Floor-furniture, wall-door, wall-furniture
+            3. **Medium**: All other adjacent objects
+            
+            ### Blackspot Detection:
+            - **ONLY** detects dark areas on floors, rugs, carpets, and mats
+            - **EXCLUDES** shadows on furniture, tables, ceilings, walls
+            - Dark floor areas can appear as "holes" to dementia patients
+            
+            ### Best Practices:
+            - Use warm colors (red, yellow, orange) for visibility
+            - Avoid pastels and muted tones
+            - Ensure all adjacent objects have distinct colors
+            - Add texture to supplement color contrast
+            """)
+
+        gr.Markdown("""
+        ---
+        **NeuroNest** v2.0 - Creating safer environments for cognitive health through AI  
+        *Strict floor-only blackspot detection & comprehensive contrast analysis*
+        """)
+
+        # Connect the analyze button
         analyze_button.click(
             fn=analyze_wrapper,
             inputs=[
@@ -758,17 +843,11 @@ def create_gradio_interface():
             ],
             outputs=[
                 seg_display,
-                blackspot_display,
+                blackspot_display if blackspot_ok else seg_display,  # Dummy output if not available
                 contrast_display,
                 analysis_report
             ]
         )
-
-        gr.Markdown("""
-            ---
-            **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis  
-            *Creating safer environments for cognitive health through AI*
-            """)
 
     return interface
 
