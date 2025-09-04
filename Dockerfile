@@ -90,7 +90,7 @@ RUN pip install --user \
 # These versions are compatible with each other and the rest of the stack
 RUN pip install --user \
     huggingface_hub==0.17.3 \
-    gradio==3.50.2
+    gradio==4.44.1
 
 # Try to install NATTEN (optional)
 RUN pip install --user natten==0.14.6 -f https://shi-labs.com/natten/wheels/cpu/torch1.9/index.html || \
