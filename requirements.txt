@@ -1,0 +1,71 @@
+# PyTorch CPU versions
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==1.9.0+cpu
+torchvision==0.10.0+cpu
+
+# Core dependencies
+numpy==1.21.6
+Pillow==8.3.2
+
+
+# Detectron2 CPU version
+-f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
+detectron2==0.6
+
+# OpenCV
+opencv-python==4.5.5.64
+
+# Image utilities
+imutils==0.5.4
+
+# Scientific computing
+scipy==1.7.3
+shapely==1.8.5
+h5py==3.7.0
+scikit-image==0.19.3
+scikit-learn==1.0.2
+
+# Deep learning utilities
+timm==0.4.12
+einops==0.6.1
+
+# Development tools
+tqdm==4.64.1
+
+
+
+
+
+# NLP utilities
+ftfy==6.1.1
+regex==2022.10.31
+inflect==6.0.4
+
+# File utilities
+gdown==4.5.4
+wget==3.2
+
+# Compatible web interface versions
+gradio==4.44.1
+huggingface_hub==0.8.1
+fastapi==0.78.0
+uvicorn==0.18.2
+
+# YAML support
+PyYAML==5.4.1
+
+# Matplotlib
+matplotlib==3.5.3
+
+# Build tools
+cython==0.29.35
+setuptools==59.5.0
+
+# COCO API
+pycocotools
+
+# Additional gradio dependencies
+httpx==0.23.0
+httpcore==0.15.0
+anyio==3.6.1
+starlette==0.19.1
