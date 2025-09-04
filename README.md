@@ -1,5 +1,5 @@
 ---
-title: NeuroNesttxst
+title: TxstNeuroNest
 emoji: 🧠
 colorFrom: blue
 colorTo: purple
