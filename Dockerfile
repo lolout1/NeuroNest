@@ -89,7 +89,7 @@ RUN pip install --user \
 # Install Gradio and HuggingFace Hub with compatible versions
 # These versions are compatible with each other and the rest of the stack
 RUN pip install --user \
-    huggingface_hub==0.19.3 \
+    huggingface_hub==0.17.3 \
     gradio==4.44.1
 
 # Try to install NATTEN (optional)
