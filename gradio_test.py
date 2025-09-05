@@ -57,7 +57,7 @@ ONEFORMER_CONFIG = {
     }
 }
 
-BLACKSPOT_MODEL_REPO = "sww35/txstNeuroNest"
+BLACKSPOT_MODEL_REPO = "lolout1/txstNeuroNest"
 BLACKSPOT_MODEL_FILE = "model_0004999.pth"
 
 DISPLAY_MAX_WIDTH = 1920
