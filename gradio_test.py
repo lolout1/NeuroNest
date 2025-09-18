@@ -556,6 +556,8 @@ def create_gradio_interface():
     description = """
     **This is the backend of NeuroNest - an object detection and visual analysis application intended to improve the lives of those affected by Alzheimers.**
     
+    **This version uses the free-tier CPU inferencing, it will take up to 3 minutes to process a picture** 
+    
     **Texas State CS && Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
     
     This system provides:
