@@ -559,6 +559,8 @@ def create_gradio_interface():
     **This version uses the free-tier CPU inferencing, it will take up to 3 minutes to process a picture** 
     
     **Texas State CS && Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
+
+    ** People with Alzheimers can find many things uncomfortable such as black spots on floors and objects in the room having low contrast. ** 
     
     This system provides:
     - **Object Segmentation**: Identifies all room elements (floors, walls, furniture)
