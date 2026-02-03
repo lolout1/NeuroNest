@@ -88,6 +88,9 @@ RUN pip install --user \
 # Install web framework dependencies with compatible versions
 # Using compatible versions for Gradio 4.44.1
 RUN pip install --user \
+    "urllib3>=1.26.0,<2.0.0" \
+    "charset-normalizer>=2.0.0,<4.0.0" \
+    "requests>=2.27.0,<3.0.0" \
     "httpx>=0.24.0" \
     "anyio>=3.7.0" \
     "fastapi>=0.100.0" \
