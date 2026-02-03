@@ -48,22 +48,26 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# Install numpy FIRST with strict version <2.0 (critical for PyTorch compatibility)
+# CRITICAL: Install numpy FIRST with exact version (blocks upgrades)
 RUN pip install --user "numpy==1.23.5"
 
 # Install PyTorch 1.12.1 CPU (has torch.amp for OneFormer, CPU compatible)
 RUN pip install --user torch==1.12.1+cpu torchvision==0.13.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Install core dependencies compatible with Python 3.9 and torch 1.10
+# Install core dependencies compatible with Python 3.9 and torch 1.12
 RUN pip install --user \
     "Pillow>=9.0.0,<10.0.0" \
     "opencv-python>=4.5.0,<5.0.0"
 
-# Install scientific computing dependencies
+# Install scientific computing dependencies with STRICT scipy version
+# scipy 1.9.3 requires numpy<1.26 which blocks numpy 2.x
 RUN pip install --user \
-    "scipy>=1.7.0,<2.0.0" \
-    "scikit-image>=0.19.0,<1.0.0" \
+    "scipy==1.9.3" \
+    "scikit-image==0.19.3" \
     "scikit-learn>=1.0.0,<2.0.0"
+
+# ENFORCE numpy version after scipy (prevents any upgrade)
+RUN pip install --user --force-reinstall --no-deps "numpy==1.23.5"
 
 # Install detectron2 from source (no prebuilt wheels for PyTorch 1.12 CPU)
 # Build with CPU-only support
