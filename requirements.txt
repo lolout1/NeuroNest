@@ -1,71 +1,64 @@
-# PyTorch CPU versions
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==1.9.0+cpu
-torchvision==0.10.0+cpu
+# PyTorch CPU versions - Using 1.10.1 (OneFormer's official supported version)
+-f https://download.pytorch.org/whl/torch_stable.html
+torch==1.10.1+cpu
+torchvision==0.11.2+cpu
 
 # Core dependencies
-numpy==1.21.6
-Pillow==8.3.2
+numpy>=1.21.0,<1.24.0
+Pillow>=9.0.0,<10.0.0
 
-
-# Detectron2 CPU version
--f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.9/index.html
+# Detectron2 CPU version - prebuilt wheels for PyTorch 1.10 (stable)
+-f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.10/index.html
 detectron2==0.6
 
 # OpenCV
-opencv-python==4.5.5.64
+opencv-python>=4.5.0,<5.0.0
 
 # Image utilities
-imutils==0.5.4
+imutils>=0.5.4,<1.0.0
 
 # Scientific computing
-scipy==1.7.3
-shapely==1.8.5
-h5py==3.7.0
-scikit-image==0.19.3
-scikit-learn==1.0.2
+scipy>=1.7.0,<2.0.0
+shapely>=2.0.0,<3.0.0
+h5py>=3.7.0,<4.0.0
+scikit-image>=0.19.0,<1.0.0
+scikit-learn>=1.0.0,<2.0.0
 
 # Deep learning utilities
-timm==0.4.12
-einops==0.6.1
+timm>=0.9.0,<1.0.0
+einops>=0.7.0,<1.0.0
 
 # Development tools
-tqdm==4.64.1
-
-
-
-
+tqdm>=4.65.0,<5.0.0
 
 # NLP utilities
-ftfy==6.1.1
-regex==2022.10.31
-inflect==6.0.4
+ftfy>=6.1.0
+regex>=2023.0.0
+inflect>=6.0.0
 
 # File utilities
-gdown==4.5.4
-wget==3.2
+gdown>=4.6.0
+wget>=3.2
 
-# Compatible web interface versions
+# Web interface - Gradio 4.44.1 requires huggingface_hub>=0.20.0
 gradio==4.44.1
-huggingface_hub==0.8.1
-fastapi==0.78.0
-uvicorn==0.18.2
+huggingface_hub>=0.20.0,<1.0.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
 
 # YAML support
-PyYAML==5.4.1
+PyYAML>=6.0
 
 # Matplotlib
-matplotlib==3.5.3
+matplotlib>=3.7.0,<4.0.0
 
 # Build tools
-cython==0.29.35
-setuptools==59.5.0
+cython>=0.29.0
+setuptools>=68.0.0
 
 # COCO API
 pycocotools
 
-# Additional gradio dependencies
-httpx==0.23.0
-httpcore==0.15.0
-anyio==3.6.1
-starlette==0.19.1
+# Additional dependencies
+httpx>=0.24.0
+anyio>=3.7.0
