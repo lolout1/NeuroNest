@@ -71,11 +71,17 @@ else:
         # Handle @custom_bwd() or @custom_bwd(cast_inputs=...)
         return decorator
 
-# Monkey patch torch.cuda.amp and torch.amp if needed
-if not torch.cuda.is_available():
-    import sys
-    from types import ModuleType
+# Monkey patch torch modules for CPU compatibility
+import sys
+from types import ModuleType
 
+# Always patch torch.nn.attention if it doesn't exist (PyTorch 1.12.1 doesn't have it)
+if not hasattr(torch.nn, 'attention'):
+    torch.nn.attention = ModuleType('attention')
+    sys.modules['torch.nn.attention'] = torch.nn.attention
+
+# Patch torch.cuda.amp and torch.amp if on CPU
+if not torch.cuda.is_available():
     # Patch torch.cuda.amp
     if not hasattr(torch.cuda, 'amp'):
         torch.cuda.amp = ModuleType('amp')
