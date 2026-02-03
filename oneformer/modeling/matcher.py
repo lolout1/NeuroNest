@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch import nn
-from torch.cuda.amp import autocast
+from oneformer.cpu_compat import autocast
 import numpy as np
 
 from detectron2.projects.point_rend.point_features import point_sample
