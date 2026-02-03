@@ -13,14 +13,18 @@ if torch.cuda.is_available():
         from torch.cuda.amp import custom_bwd, custom_fwd
     except ImportError:
         # Fallback if custom_bwd/custom_fwd don't exist
-        def custom_fwd(**kwargs):
+        def custom_fwd(_func=None, **kwargs):
             def decorator(func):
                 return func
+            if _func is not None:
+                return _func
             return decorator
 
-        def custom_bwd(**kwargs):
+        def custom_bwd(_func=None, **kwargs):
             def decorator(func):
                 return func
+            if _func is not None:
+                return _func
             return decorator
 else:
     # CPU-only fallbacks
@@ -33,28 +37,38 @@ else:
         """
         yield
 
-    def custom_fwd(**kwargs):
+    def custom_fwd(_func=None, **kwargs):
         """
         No-op decorator for custom forward pass on CPU.
-        Returns the function unchanged.
+        Supports both @custom_fwd and @custom_fwd() calling styles.
         """
         def decorator(func):
             @wraps(func)
             def wrapper(*args, **kwargs):
                 return func(*args, **kwargs)
             return wrapper
+
+        # Handle @custom_fwd (without parentheses)
+        if _func is not None:
+            return _func
+        # Handle @custom_fwd() or @custom_fwd(cast_inputs=...)
         return decorator
 
-    def custom_bwd(**kwargs):
+    def custom_bwd(_func=None, **kwargs):
         """
         No-op decorator for custom backward pass on CPU.
-        Returns the function unchanged.
+        Supports both @custom_bwd and @custom_bwd() calling styles.
         """
         def decorator(func):
             @wraps(func)
             def wrapper(*args, **kwargs):
                 return func(*args, **kwargs)
             return wrapper
+
+        # Handle @custom_bwd (without parentheses)
+        if _func is not None:
+            return _func
+        # Handle @custom_bwd() or @custom_bwd(cast_inputs=...)
         return decorator
 
 # Monkey patch torch.cuda.amp and torch.amp if needed
