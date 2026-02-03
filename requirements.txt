@@ -3,8 +3,8 @@
 torch==1.10.1+cpu
 torchvision==0.11.2+cpu
 
-# Core dependencies
-numpy>=1.21.0,<1.24.0
+# Core dependencies - NumPy <2.0 for PyTorch 1.10 compatibility
+numpy>=1.21.0,<2.0.0
 Pillow>=9.0.0,<10.0.0
 
 # Detectron2 CPU version - prebuilt wheels for PyTorch 1.10 (stable)
