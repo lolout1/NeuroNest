@@ -1,15 +1,30 @@
 """
 CPU compatibility utilities for OneFormer on PyTorch CPU builds.
-Provides fallback for torch.cuda.amp.autocast when CUDA is not available.
+Provides fallbacks for torch.cuda.amp components when CUDA is not available.
 """
 import torch
 from contextlib import contextmanager
+from functools import wraps
 
 if torch.cuda.is_available():
     # Use real CUDA autocast when GPU is available
     from torch.cuda.amp import autocast
+    try:
+        from torch.cuda.amp import custom_bwd, custom_fwd
+    except ImportError:
+        # Fallback if custom_bwd/custom_fwd don't exist
+        def custom_fwd(**kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+        def custom_bwd(**kwargs):
+            def decorator(func):
+                return func
+            return decorator
 else:
-    # CPU-only fallback: no-op context manager
+    # CPU-only fallbacks
+
     @contextmanager
     def autocast(enabled=True, dtype=None, cache_enabled=None):
         """
@@ -18,4 +33,42 @@ else:
         """
         yield
 
-__all__ = ['autocast']
+    def custom_fwd(**kwargs):
+        """
+        No-op decorator for custom forward pass on CPU.
+        Returns the function unchanged.
+        """
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+            return wrapper
+        return decorator
+
+    def custom_bwd(**kwargs):
+        """
+        No-op decorator for custom backward pass on CPU.
+        Returns the function unchanged.
+        """
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+            return wrapper
+        return decorator
+
+# Monkey patch torch.cuda.amp if needed
+if not torch.cuda.is_available():
+    # Create torch.cuda.amp module if it doesn't exist
+    import sys
+    if not hasattr(torch.cuda, 'amp'):
+        from types import ModuleType
+        torch.cuda.amp = ModuleType('amp')
+        sys.modules['torch.cuda.amp'] = torch.cuda.amp
+
+    # Inject our fallbacks
+    torch.cuda.amp.autocast = autocast
+    torch.cuda.amp.custom_fwd = custom_fwd
+    torch.cuda.amp.custom_bwd = custom_bwd
+
+__all__ = ['autocast', 'custom_fwd', 'custom_bwd']
