@@ -57,18 +57,31 @@ else:
             return wrapper
         return decorator
 
-# Monkey patch torch.cuda.amp if needed
+# Monkey patch torch.cuda.amp and torch.amp if needed
 if not torch.cuda.is_available():
-    # Create torch.cuda.amp module if it doesn't exist
     import sys
+    from types import ModuleType
+
+    # Patch torch.cuda.amp
     if not hasattr(torch.cuda, 'amp'):
-        from types import ModuleType
         torch.cuda.amp = ModuleType('amp')
         sys.modules['torch.cuda.amp'] = torch.cuda.amp
 
-    # Inject our fallbacks
     torch.cuda.amp.autocast = autocast
     torch.cuda.amp.custom_fwd = custom_fwd
     torch.cuda.amp.custom_bwd = custom_bwd
+
+    # Patch torch.amp (in case imports come from there)
+    if not hasattr(torch, 'amp'):
+        torch.amp = ModuleType('amp')
+        sys.modules['torch.amp'] = torch.amp
+
+    # Inject fallbacks into torch.amp as well
+    if not hasattr(torch.amp, 'autocast'):
+        torch.amp.autocast = autocast
+    if not hasattr(torch.amp, 'custom_fwd'):
+        torch.amp.custom_fwd = custom_fwd
+    if not hasattr(torch.amp, 'custom_bwd'):
+        torch.amp.custom_bwd = custom_bwd
 
 __all__ = ['autocast', 'custom_fwd', 'custom_bwd']
