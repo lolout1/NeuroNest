@@ -48,11 +48,11 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# Install PyTorch 1.10.1 CPU (OneFormer's official supported version)
-RUN pip install --user torch==1.10.1+cpu torchvision==0.11.2+cpu -f https://download.pytorch.org/whl/torch_stable.html
+# Install numpy FIRST with strict version <2.0 (critical for PyTorch compatibility)
+RUN pip install --user "numpy==1.23.5"
 
-# Install numpy <2.0 (PyTorch 1.10 compiled with NumPy 1.x)
-RUN pip install --user "numpy>=1.21.0,<2.0.0"
+# Install PyTorch 1.12.1 CPU (has torch.amp for OneFormer, CPU compatible)
+RUN pip install --user torch==1.12.1+cpu torchvision==0.13.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install core dependencies compatible with Python 3.9 and torch 1.10
 RUN pip install --user \
@@ -65,8 +65,9 @@ RUN pip install --user \
     "scikit-image>=0.19.0,<1.0.0" \
     "scikit-learn>=1.0.0,<2.0.0"
 
-# Install detectron2 v0.6 with REAL prebuilt wheels for PyTorch 1.10 CPU
-RUN pip install --user detectron2==0.6 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/torch1.10/index.html
+# Install detectron2 from source (no prebuilt wheels for PyTorch 1.12 CPU)
+# Build with CPU-only support
+RUN pip install --user 'git+https://github.com/facebookresearch/detectron2.git@v0.6'
 
 # Install pycocotools separately to avoid compilation issues
 RUN pip install --user pycocotools --no-build-isolation
