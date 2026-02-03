@@ -97,10 +97,11 @@ RUN pip install --user \
     "uvicorn[standard]>=0.23.0"
 
 # Install Gradio and HuggingFace Hub with compatible versions
-# Gradio 4.44.1 requires huggingface_hub>=0.20.0
+# Gradio 4.44.1 with gradio-client 1.3.0 (fixes JSON schema bug)
 RUN pip install --user \
     "huggingface_hub>=0.20.0,<1.0.0" \
-    "gradio==4.44.1"
+    "gradio==4.44.1" \
+    "gradio-client==1.3.0"
 
 # Try to install NATTEN for PyTorch 1.12 (optional - only needed for DiNAT backbone)
 # Swin backbone works without natten
