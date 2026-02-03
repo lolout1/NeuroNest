@@ -77,8 +77,14 @@ from types import ModuleType
 
 # Always patch torch.nn.attention if it doesn't exist (PyTorch 1.12.1 doesn't have it)
 if not hasattr(torch.nn, 'attention'):
-    torch.nn.attention = ModuleType('attention')
+    # Create torch.nn.attention package
+    torch.nn.attention = ModuleType('torch.nn.attention')
     sys.modules['torch.nn.attention'] = torch.nn.attention
+
+    # Create torch.nn.attention.flex_attention submodule
+    flex_attention = ModuleType('torch.nn.attention.flex_attention')
+    sys.modules['torch.nn.attention.flex_attention'] = flex_attention
+    torch.nn.attention.flex_attention = flex_attention
 
 # Patch torch.cuda.amp and torch.amp if on CPU
 if not torch.cuda.is_available():
