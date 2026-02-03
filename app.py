@@ -36,8 +36,8 @@ def check_dependencies():
         logger.info(f"CUDA available: {torch.cuda.is_available()}")
         
         # Verify torch version
-        if not torch.__version__.startswith('1.9'):
-            logger.warning(f"Expected PyTorch 1.9.x, got {torch.__version__}")
+        if not torch.__version__.startswith('1.10'):
+            logger.warning(f"Expected PyTorch 1.10.x, got {torch.__version__}")
         
         import detectron2
         logger.info(f"Detectron2 version: {detectron2.__version__}")
