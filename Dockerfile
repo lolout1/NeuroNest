@@ -102,9 +102,10 @@ RUN pip install --user \
     "huggingface_hub>=0.20.0,<1.0.0" \
     "gradio==4.44.1"
 
-# Try to install NATTEN for PyTorch 1.10 (optional - may not have wheels)
-RUN pip install --user natten -f https://shi-labs.com/natten/wheels/cpu/torch1.10/index.html || \
-    echo "NATTEN installation failed (expected, not critical) - continuing without it"
+# Try to install NATTEN for PyTorch 1.12 (optional - only needed for DiNAT backbone)
+# Swin backbone works without natten
+RUN pip install --user natten -f https://shi-labs.com/natten/wheels/cpu/torch1.12/index.html || \
+    echo "NATTEN installation failed (expected for PyTorch 1.12.1) - continuing with Swin backbone only"
 
 # Install remaining dependencies
 RUN pip install --user \

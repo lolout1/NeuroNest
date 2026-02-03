@@ -36,6 +36,15 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Check DiNAT availability if OneFormer loaded
+if ONEFORMER_AVAILABLE:
+    try:
+        from oneformer.modeling import DINAT_AVAILABLE
+        if not DINAT_AVAILABLE:
+            logger.info("DiNAT backbone not available - using Swin backbone only")
+    except ImportError:
+        pass
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CPU_DEVICE = torch.device("cpu")
 torch.set_num_threads(4)
