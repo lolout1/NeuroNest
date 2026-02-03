@@ -52,9 +52,25 @@ def check_dependencies():
         
         import detectron2
         logger.info(f"Detectron2 version: {detectron2.__version__}")
-        
+
         import gradio as gr
+        import fastapi
+        import pydantic
         logger.info(f"Gradio version: {gr.__version__}")
+        logger.info(f"FastAPI version: {fastapi.__version__}")
+        logger.info(f"Pydantic version: {pydantic.__version__}")
+
+        # Validate Gradio compatibility with Python 3.9
+        if not gr.__version__.startswith("4.43"):
+            logger.warning(f"⚠️ Gradio version {gr.__version__} may not be compatible with Python 3.9")
+
+        # Validate FastAPI compatibility
+        try:
+            fastapi_minor = int(fastapi.__version__.split('.')[1])
+            if fastapi_minor >= 113:
+                logger.warning(f"⚠️ FastAPI version {fastapi.__version__} has breaking changes for Gradio")
+        except (ValueError, IndexError):
+            pass
         
         import cv2
         logger.info(f"OpenCV version: {cv2.__version__}")
@@ -107,8 +123,8 @@ def main():
         interface.queue(max_size=10).launch(
             server_name="0.0.0.0",
             server_port=7860,
-            share=True,
-            debug = True
+            share=False,  # HF Spaces provides public URL automatically
+            debug=True
         )
         
     except Exception as e:

@@ -86,21 +86,23 @@ RUN pip install --user \
     "imutils>=0.5.4,<1.0.0"
 
 # Install web framework dependencies with compatible versions
-# Using compatible versions for Gradio 4.44.1
+# Using compatible versions for Gradio 4.43.0 (Python 3.9 compatible)
 RUN pip install --user \
     "urllib3>=1.26.0,<2.0.0" \
     "charset-normalizer>=2.0.0,<4.0.0" \
     "requests>=2.27.0,<3.0.0" \
-    "httpx>=0.24.0" \
-    "anyio>=3.7.0" \
-    "fastapi>=0.100.0" \
-    "uvicorn[standard]>=0.23.0"
+    "httpx>=0.24.0,<0.28.0" \
+    "anyio>=3.7.0,<4.0.0" \
+    "pydantic>=2.0.0,<2.11.0" \
+    "starlette>=0.27.0,<0.38.0" \
+    "fastapi>=0.100.0,<0.113.0" \
+    "uvicorn[standard]>=0.23.0,<0.30.0"
 
 # Install Gradio and HuggingFace Hub with compatible versions
-# Gradio 4.44.1 with gradio-client 1.3.0 (fixes JSON schema bug)
+# Gradio 4.43.0 (last version fully compatible with Python 3.9)
 RUN pip install --user \
     "huggingface_hub>=0.20.0,<1.0.0" \
-    "gradio==4.44.1" \
+    "gradio==4.43.0" \
     "gradio-client==1.3.0"
 
 # Try to install NATTEN for PyTorch 1.12 (optional - only needed for DiNAT backbone)
