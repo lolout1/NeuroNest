@@ -772,7 +772,7 @@ if __name__ == "__main__":
         interface.queue(max_size=10).launch(
             server_name="0.0.0.0",
             server_port=7860,
-            share=True
+            share=False  # HF Spaces provides public URL automatically
         )
     except Exception as e:
         logger.error(f"Failed to launch application: {e}")
