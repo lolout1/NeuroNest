@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['FORCE_CUDA'] = '0'
 
+# CRITICAL: Setup OneFormer path BEFORE any imports
+oneformer_path = Path(__file__).parent / "oneformer"
+if oneformer_path.exists() and str(oneformer_path) not in sys.path:
+    sys.path.insert(0, str(oneformer_path))
+
+# Import CPU compatibility patches immediately
+try:
+    import oneformer.cpu_compat  # noqa: F401, E402
+except ImportError:
+    pass  # May not be available yet during initial setup
+
 def setup_oneformer_imports():
     """Add OneFormer to Python path if needed"""
     oneformer_path = Path(__file__).parent / "oneformer"
@@ -34,9 +45,6 @@ def check_dependencies():
         import torch
         logger.info(f"PyTorch version: {torch.__version__}")
         logger.info(f"CUDA available: {torch.cuda.is_available()}")
-
-        # Ensure CPU compatibility patches are loaded before OneFormer
-        import oneformer.cpu_compat  # noqa: F401
 
         # Verify torch version (1.12+ needed for torch.amp in OneFormer)
         if not torch.__version__.startswith('1.12'):
