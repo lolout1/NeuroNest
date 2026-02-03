@@ -34,7 +34,10 @@ def check_dependencies():
         import torch
         logger.info(f"PyTorch version: {torch.__version__}")
         logger.info(f"CUDA available: {torch.cuda.is_available()}")
-        
+
+        # Ensure CPU compatibility patches are loaded before OneFormer
+        import oneformer.cpu_compat  # noqa: F401
+
         # Verify torch version (1.12+ needed for torch.amp in OneFormer)
         if not torch.__version__.startswith('1.12'):
             logger.warning(f"Expected PyTorch 1.12.x, got {torch.__version__}")
