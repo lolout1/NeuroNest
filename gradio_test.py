@@ -643,6 +643,56 @@ def create_gradio_interface():
     """
     
     with gr.Blocks(css="""
+        /* Live Demo Button - Prominent CTA */
+        .demo-button-container {
+            text-align: center;
+            margin: clamp(15px, 3vw, 25px) auto;
+            padding: clamp(10px, 2vw, 20px);
+        }
+
+        .demo-cta-button {
+            display: inline-block;
+            padding: clamp(15px, 3vw, 22px) clamp(40px, 8vw, 60px) !important;
+            font-size: clamp(1.1em, 2.5vw, 1.5em) !important;
+            font-weight: 700 !important;
+            color: white !important;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            border: none !important;
+            border-radius: clamp(8px, 1.5vw, 12px) !important;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5) !important;
+            cursor: pointer !important;
+            transition: all 0.4s ease !important;
+            text-decoration: none !important;
+            width: auto !important;
+            min-width: clamp(200px, 40vw, 320px);
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+
+        .demo-cta-button:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.7) !important;
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%) !important;
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5); }
+            50% { box-shadow: 0 8px 35px rgba(102, 126, 234, 0.8); }
+        }
+
+        .demo-label {
+            display: inline-block;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: clamp(6px, 1.5vw, 10px) clamp(15px, 3vw, 25px);
+            border-radius: clamp(20px, 4vw, 30px);
+            font-size: clamp(0.75em, 1.5vw, 0.9em);
+            font-weight: 600;
+            margin-bottom: clamp(8px, 2vw, 12px);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        /* Base Container - Responsive padding */
         /* Base Container - Responsive padding */
         .container {
             max-width: 100%;
@@ -824,6 +874,17 @@ def create_gradio_interface():
     """, theme=gr.themes.Base()) as interface:
         with gr.Column(elem_classes="container"):
             gr.Markdown(f"# {title}")
+
+            # Prominent Live Demo CTA Button
+            gr.HTML("""
+                <div class="demo-button-container">
+                    <div class="demo-label">🚀 Try It Now</div>
+                    <button class="demo-cta-button" onclick="document.getElementById('demo-section').scrollIntoView({behavior: 'smooth', block: 'center'})">
+                        ▶️ Launch Live Demo
+                    </button>
+                </div>
+            """)
+
             gr.Markdown(description)
             if not blackspot_ok:
                 gr.Markdown("""
@@ -882,6 +943,9 @@ def create_gradio_interface():
                         label="WCAG Contrast Threshold"
                     )
             
+            # Demo section anchor for scroll navigation
+            gr.HTML('<div id="demo-section"></div>')
+
             with gr.Row():
                 with gr.Column(scale=2):
                     # Now show the actual visible image input
