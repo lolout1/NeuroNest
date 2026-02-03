@@ -560,7 +560,7 @@ def create_gradio_interface():
     
     **Texas State CS && Interior Design Dept. - Abheek Pradhan, Dr. Nadim Adi, Dr. Greg Lakomski**
 
-    ** People with Alzheimers can find many things uncomfortable such as black spots on floors and objects in the room having low contrast. ** 
+    **People with Alzheimers can find many things uncomfortable such as black spots on floors and objects in the room having low contrast.** 
     
     This system provides:
     - **Object Segmentation**: Identifies all room elements (floors, walls, furniture)
