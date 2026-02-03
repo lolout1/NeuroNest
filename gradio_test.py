@@ -166,6 +166,13 @@ class ImprovedBlackspotDetector:
         self.floor_classes = [3, 4, 13, 28, 78]
 
     def download_model(self) -> str:
+        # Check root directory first (HF Spaces LFS location)
+        root_path = f"./{BLACKSPOT_MODEL_FILE}"
+        if os.path.exists(root_path):
+            logger.info(f"Using local blackspot model from root: {root_path}")
+            return root_path
+
+        # Try downloading from HuggingFace Hub
         try:
             model_path = hf_hub_download(
                 repo_id=BLACKSPOT_MODEL_REPO,
@@ -175,6 +182,8 @@ class ImprovedBlackspotDetector:
             return model_path
         except Exception as e:
             logger.warning(f"Could not download blackspot model from HF: {e}")
+
+            # Fall back to output directory
             local_path = f"./output_floor_blackspot/{BLACKSPOT_MODEL_FILE}"
             if os.path.exists(local_path):
                 logger.info(f"Using local blackspot model: {local_path}")
