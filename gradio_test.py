@@ -879,37 +879,14 @@ def create_gradio_interface():
             gr.HTML("""
                 <div class="demo-button-container">
                     <div class="demo-label">🚀 Try It Now</div>
-                    <a href="#demo-section" class="demo-cta-button" style="text-decoration: none !important;">
+                    <a href="#demo-section"
+                       class="demo-cta-button"
+                       onclick="setTimeout(function(){var el=document.getElementById('demo-section');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});}},100);return false;"
+                       ontouchend="setTimeout(function(){var el=document.getElementById('demo-section');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});}},100);return false;"
+                       style="text-decoration: none !important; display: inline-block;">
                         ▶️ Launch Live Demo
                     </a>
                 </div>
-                <script>
-                    // Enhanced scroll for both desktop and mobile
-                    document.addEventListener('DOMContentLoaded', function() {
-                        const demoButtons = document.querySelectorAll('a[href="#demo-section"]');
-                        demoButtons.forEach(button => {
-                            button.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                const target = document.getElementById('demo-section');
-                                if (target) {
-                                    target.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                    // Fallback for browsers that don't support smooth scrolling
-                                    if (!('scrollBehavior' in document.documentElement.style)) {
-                                        target.scrollIntoView(true);
-                                    }
-                                }
-                            });
-                            // Touch event for mobile devices
-                            button.addEventListener('touchend', function(e) {
-                                e.preventDefault();
-                                const target = document.getElementById('demo-section');
-                                if (target) {
-                                    target.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                }
-                            }, {passive: false});
-                        });
-                    });
-                </script>
             """)
 
             gr.Markdown(description)
