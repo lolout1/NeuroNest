@@ -879,10 +879,37 @@ def create_gradio_interface():
             gr.HTML("""
                 <div class="demo-button-container">
                     <div class="demo-label">🚀 Try It Now</div>
-                    <button class="demo-cta-button" onclick="document.getElementById('demo-section').scrollIntoView({behavior: 'smooth', block: 'center'})">
+                    <a href="#demo-section" class="demo-cta-button" style="text-decoration: none !important;">
                         ▶️ Launch Live Demo
-                    </button>
+                    </a>
                 </div>
+                <script>
+                    // Enhanced scroll for both desktop and mobile
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const demoButtons = document.querySelectorAll('a[href="#demo-section"]');
+                        demoButtons.forEach(button => {
+                            button.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                const target = document.getElementById('demo-section');
+                                if (target) {
+                                    target.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                    // Fallback for browsers that don't support smooth scrolling
+                                    if (!('scrollBehavior' in document.documentElement.style)) {
+                                        target.scrollIntoView(true);
+                                    }
+                                }
+                            });
+                            // Touch event for mobile devices
+                            button.addEventListener('touchend', function(e) {
+                                e.preventDefault();
+                                const target = document.getElementById('demo-section');
+                                if (target) {
+                                    target.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                }
+                            }, {passive: false});
+                        });
+                    });
+                </script>
             """)
 
             gr.Markdown(description)
@@ -904,6 +931,7 @@ def create_gradio_interface():
             with gr.Column(elem_classes="sample-section"):
                 gr.Markdown("### 🖼️ Try Sample Images")
                 gr.Markdown("*Click any image below to load it for analysis or upload your own. || Then scroll down and click analyze environment*")
+                gr.Markdown("⏱️ **Note:** We use free-tier CPU inferencing, so processing can take up to a few minutes. Please be patient or feel free to [donate](https://github.com/sponsors) to support faster GPU processing! 💙")
                 
                 if sample_images_available:
                     gr.Examples(
