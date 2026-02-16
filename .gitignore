@@ -20,5 +20,9 @@ research/
 # XAI result cache (generated at runtime)
 xai_cache/
 
+# Model weights and training artifacts
+models/
+.cache/
+
 # Local project config (never commit)
 CLAUDE.md
