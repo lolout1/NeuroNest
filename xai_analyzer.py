@@ -16,6 +16,7 @@ import torch.nn.functional as F
 import gc
 import logging
 import time
+import traceback
 from contextlib import contextmanager
 from typing import Dict, Optional, Tuple
 from PIL import Image
@@ -111,6 +112,100 @@ def _eager_attention(model):
 
 
 # ---------------------------------------------------------------------------
+# Visualization helpers
+# ---------------------------------------------------------------------------
+
+# Method descriptions shown on visualizations
+METHOD_INFO = {
+    "attention": {
+        "title": "Self-Attention Map",
+        "desc": "Where the model focuses within a single transformer layer",
+        "detail": "CLS token attention over spatial patches",
+        "cmap": cv2.COLORMAP_INFERNO,
+    },
+    "rollout": {
+        "title": "Attention Rollout",
+        "desc": "Cumulative attention flow through all encoder layers",
+        "detail": "Abnar & Zuidema (2020) — aggregated multi-layer focus",
+        "cmap": cv2.COLORMAP_INFERNO,
+    },
+    "gradcam": {
+        "title": "GradCAM",
+        "desc": "Gradient-weighted activation — regions driving class prediction",
+        "detail": "Selvaraju et al. (2017) — class-discriminative localization",
+        "cmap": cv2.COLORMAP_JET,
+    },
+    "entropy": {
+        "title": "Predictive Entropy",
+        "desc": "Per-pixel uncertainty — bright = uncertain, dark = confident",
+        "detail": "Shannon entropy over 150-class posterior distribution",
+        "cmap": cv2.COLORMAP_MAGMA,
+    },
+    "pca": {
+        "title": "Feature PCA",
+        "desc": "Hidden state structure — similar colors = similar features",
+        "detail": "SVD projection of 1024-dim features to RGB",
+        "cmap": None,
+    },
+    "saliency": {
+        "title": "Class Saliency",
+        "desc": "Which input pixels most influence the target class",
+        "detail": "Simonyan et al. (2014) — input gradient magnitude",
+        "cmap": cv2.COLORMAP_HOT,
+    },
+    "chefer": {
+        "title": "Chefer Relevancy",
+        "desc": "Attention x gradient propagation — relevance to prediction",
+        "detail": "Chefer et al. (2021) — transformer-specific attribution",
+        "cmap": cv2.COLORMAP_INFERNO,
+    },
+}
+
+
+def _draw_colorbar(image, cmap, lo_label="Low", hi_label="High", width=30):
+    """Draw a vertical colorbar on the right side of the image."""
+    h, w = image.shape[:2]
+    bar_h = h - 80  # leave room for labels
+    gradient = np.linspace(0, 255, bar_h).astype(np.uint8)
+    gradient = gradient[::-1].reshape(-1, 1)  # top=high, bottom=low
+    gradient = np.tile(gradient, (1, width))
+    bar_rgb = cv2.applyColorMap(gradient, cmap)
+    bar_rgb = cv2.cvtColor(bar_rgb, cv2.COLOR_BGR2RGB)
+
+    # Create panel
+    panel = np.full((h, width + 60, 3), 30, dtype=np.uint8)
+    y_off = 40
+    panel[y_off:y_off + bar_h, 10:10 + width] = bar_rgb
+
+    # Labels
+    cv2.putText(panel, hi_label, (8, y_off - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 220), 1, cv2.LINE_AA)
+    cv2.putText(panel, lo_label, (8, y_off + bar_h + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 220), 1, cv2.LINE_AA)
+    return np.hstack([image, panel])
+
+
+def _draw_info_panel(image, method_key, extra_text=""):
+    """Draw a descriptive info bar at the bottom of the image."""
+    info = METHOD_INFO.get(method_key, {})
+    desc = info.get("desc", "")
+    detail = info.get("detail", "")
+    h, w = image.shape[:2]
+    bar_h = 50
+    bar = np.full((bar_h, w, 3), 25, dtype=np.uint8)
+    # Description line
+    cv2.putText(bar, desc, (10, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1, cv2.LINE_AA)
+    # Detail / citation line
+    bottom_text = detail
+    if extra_text:
+        bottom_text = f"{extra_text}  |  {detail}" if detail else extra_text
+    cv2.putText(bar, bottom_text, (10, 38),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1, cv2.LINE_AA)
+    return np.vstack([image, bar])
+
+
+# ---------------------------------------------------------------------------
 # XAI Analyzer
 # ---------------------------------------------------------------------------
 
@@ -166,7 +261,7 @@ class XAIAnalyzer:
         return side, side
 
     def _cls_to_patches(self, attn_2d, gh: int, gw: int, is_decoder: bool = False):
-        """Extract CLS→patch attention row, reshape to spatial. Returns (map, gh, gw)."""
+        """Extract CLS->patch attention row, reshape to spatial. Returns (map, gh, gw)."""
         seq = attn_2d.shape[-1]
         n_pre = self._num_prefix
         n_expected = gh * gw
@@ -204,16 +299,48 @@ class XAIAnalyzer:
         cm = cv2.applyColorMap((norm * 255).astype(np.uint8), cmap)
         return cv2.addWeighted(image, 1 - alpha, cv2.cvtColor(cm, cv2.COLOR_BGR2RGB), alpha, 0)
 
-    @staticmethod
-    def _title(image, text):
+    def _annotate(self, image, method_key, title_text, extra=""):
+        """Add title bar, colorbar (if applicable), and info panel."""
         h, w = image.shape[:2]
-        bar = np.full((40, w, 3), 30, dtype=np.uint8)
-        cv2.putText(bar, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        return np.vstack([bar, image])
+        info = METHOD_INFO.get(method_key, {})
 
-    @staticmethod
-    def _fallback(image, msg):
-        return {"visualization": image, "report": f"Error: {msg}"}
+        # Title bar
+        bar = np.full((44, w, 3), 30, dtype=np.uint8)
+        cv2.putText(bar, title_text, (12, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
+        vis = np.vstack([bar, image])
+
+        # Colorbar for heatmap methods
+        cmap = info.get("cmap")
+        if cmap is not None:
+            vis = _draw_colorbar(vis, cmap)
+
+        # Info panel
+        vis = _draw_info_panel(vis, method_key, extra)
+        return vis
+
+    def _error_image(self, image, method_key, error_msg):
+        """Generate a clear error visualization instead of returning raw image."""
+        h, w = image.shape[:2]
+        overlay = image.copy()
+        # Dark overlay
+        overlay = (overlay * 0.3).astype(np.uint8)
+        # Error text
+        info = METHOD_INFO.get(method_key, {})
+        title = info.get("title", method_key)
+        cv2.putText(overlay, f"{title}: FAILED", (20, h // 2 - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 80, 80), 2, cv2.LINE_AA)
+        # Wrap error message
+        max_chars = max(1, (w - 40) // 10)
+        lines = [error_msg[i:i+max_chars] for i in range(0, min(len(error_msg), max_chars * 3), max_chars)]
+        for i, line in enumerate(lines):
+            cv2.putText(overlay, line, (20, h // 2 + 15 + i * 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        return overlay
+
+    def _fallback(self, image, msg, method_key=""):
+        return {"visualization": self._error_image(image, method_key, msg),
+                "report": f"Error ({method_key}): {msg}"}
 
     # ------------------------------------------------------------------
     # 1. Self-Attention Maps
@@ -237,9 +364,9 @@ class XAIAnalyzer:
             hook.remove()
 
         if hook.weights is None:
-            return self._fallback(image, "Attention weights not captured")
+            return self._fallback(image, "Attention weights not captured (SDPA fallback)", "attention")
 
-        attn = hook.weights[0]
+        attn = hook.weights[0]  # (heads, seq, seq)
         if head is not None and 0 <= head < attn.shape[0]:
             a = attn[head]
             hl = f"Head {head}"
@@ -248,11 +375,28 @@ class XAIAnalyzer:
             hl = "Mean"
 
         spatial, gh, gw = self._cls_to_patches(a, gh, gw, is_dec)
-        vis = self._title(self._blend(spatial, image), f"Self-Attention | Layer {idx} | {hl}")
 
+        # Compute attention statistics
+        attn_max = float(spatial.max())
+        attn_mean = float(spatial.mean())
+        focus_pct = float((spatial > spatial.mean() + spatial.std()).mean() * 100)
+
+        blended = self._blend(spatial, image)
+        extra = f"Layer {idx}/{self._num_layers-1} | {hl} | Focus: {focus_pct:.0f}% above mean"
+        vis = self._annotate(blended, "attention", f"Self-Attention | Layer {idx} | {hl}", extra)
+
+        elapsed = time.perf_counter() - t0
         del hook.weights
         gc.collect()
-        return {"visualization": vis, "report": f"Self-attention L{idx} {hl}, grid {gh}x{gw}. {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "report": (
+                f"**Self-Attention** (Layer {idx}, {hl}): "
+                f"Grid {gh}x{gw}, peak={attn_max:.4f}, mean={attn_mean:.4f}, "
+                f"focused area={focus_pct:.1f}%. "
+                f"{'Decoder' if is_dec else 'Encoder'} layer. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # 2. Attention Rollout (encoder layers only)
@@ -263,7 +407,6 @@ class XAIAnalyzer:
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        # Only encoder layers — decoder layers have different seq_len due to queries
         n_enc = self._n_encoder
         hooks = [AttentionCaptureHook().register(self.model.layers[i].attention) for i in range(n_enc)]
 
@@ -294,7 +437,6 @@ class XAIAnalyzer:
             if rollout is None:
                 rollout = fused
             else:
-                # Safety: ensure compatible dimensions
                 if rollout.shape != fused.shape:
                     logger.warning(f"[XAI] Rollout shape mismatch: {rollout.shape} vs {fused.shape}, stopping")
                     break
@@ -305,17 +447,29 @@ class XAIAnalyzer:
         gc.collect()
 
         if rollout is None:
-            return self._fallback(image, f"Rollout failed (0/{n_enc} layers captured)")
+            return self._fallback(image, f"Rollout failed (0/{n_enc} layers captured)", "rollout")
 
         spatial, gh, gw = self._cls_to_patches(rollout, gh, gw, is_decoder=False)
         if discard_ratio > 0:
             thr = np.percentile(spatial, discard_ratio * 100)
             spatial = np.where(spatial > thr, spatial, 0)
 
-        vis = self._title(self._blend(spatial, image), f"Attention Rollout | {captured} Encoder Layers")
+        focus_pct = float((spatial > spatial.mean()).mean() * 100)
+        blended = self._blend(spatial, image)
+        extra = f"{captured}/{n_enc} layers | {head_fusion} fusion | Focused: {focus_pct:.0f}%"
+        vis = self._annotate(blended, "rollout", f"Attention Rollout | {captured} Layers", extra)
+
+        elapsed = time.perf_counter() - t0
         del rollout
         gc.collect()
-        return {"visualization": vis, "report": f"Rollout {captured} encoder layers ({head_fusion}). {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "report": (
+                f"**Attention Rollout**: {captured}/{n_enc} encoder layers, "
+                f"{head_fusion} head fusion, discard bottom {discard_ratio*100:.0f}%. "
+                f"Focused area={focus_pct:.1f}%. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # 3. Predictive Entropy
@@ -338,14 +492,25 @@ class XAIAnalyzer:
         ent_norm = (ent / np.log(nc)).numpy()
         ent_map = cv2.resize(ent_norm, (ow, oh), interpolation=cv2.INTER_CUBIC)
 
-        vis = self._title(self._blend(ent_map, image, cv2.COLORMAP_MAGMA, 0.55), "Predictive Entropy")
         me = float(ent_map.mean())
         hp = float((ent_map > 0.5).mean() * 100)
+        conf_label = "HIGH" if me < 0.15 else "MODERATE" if me < 0.35 else "LOW"
 
+        blended = self._blend(ent_map, image, cv2.COLORMAP_MAGMA, 0.55)
+        extra = f"Mean H={me:.3f} | High-unc={hp:.1f}% | Confidence: {conf_label}"
+        vis = self._annotate(blended, "entropy", "Predictive Entropy", extra)
+
+        elapsed = time.perf_counter() - t0
         del outputs, mp, cp, pp, ent
         gc.collect()
-        return {"visualization": vis, "entropy_map": ent_map,
-                "report": f"Entropy mean={me:.3f}, high-unc={hp:.1f}%. {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "entropy_map": ent_map,
+            "report": (
+                f"**Predictive Entropy**: Mean={me:.3f}, high-uncertainty={hp:.1f}%, "
+                f"confidence={conf_label}. Bright regions = class boundaries or ambiguity. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # 4. Feature PCA
@@ -367,13 +532,12 @@ class XAIAnalyzer:
             hook.remove()
 
         if hook.state is None:
-            return self._fallback(image, "Hidden state not captured")
+            return self._fallback(image, "Hidden state not captured", "pca")
 
         hidden = hook.state[0].numpy()  # (seq_len, hidden_dim)
         n_pre = self._num_prefix
         seq_len = hidden.shape[0]
 
-        # Infer actual patch count from seq_len
         is_dec = idx >= self._n_encoder
         n_patches_avail = seq_len - n_pre - (self._num_queries if is_dec else 0)
         side = int(round(np.sqrt(max(n_patches_avail, 1))))
@@ -390,15 +554,41 @@ class XAIAnalyzer:
             comps[:, c] = (comps[:, c] - lo) / (hi - lo + 1e-8) * 255
 
         pca_img = cv2.resize(comps.reshape(gh, gw, 3).astype(np.uint8), (ow, oh), interpolation=cv2.INTER_CUBIC)
-        vis = self._title(pca_img, f"Feature PCA | Layer {idx}")
 
         tv = (S ** 2).sum()
         v3 = (S[:3] ** 2) / tv * 100
 
+        # PCA doesn't use _blend (it's already RGB), so annotate manually
+        title_bar = np.full((44, ow, 3), 30, dtype=np.uint8)
+        cv2.putText(title_bar, f"Feature PCA | Layer {idx}", (12, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
+        vis = np.vstack([title_bar, pca_img])
+
+        # PCA legend panel
+        legend_h = 60
+        legend = np.full((legend_h, ow, 3), 25, dtype=np.uint8)
+        cv2.putText(legend, f"PC1(R)={v3[0]:.1f}%  PC2(G)={v3[1]:.1f}%  PC3(B)={v3[2]:.1f}%", (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(legend, "Similar colors = similar learned representations | SVD of 1024-dim features",
+                    (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1, cv2.LINE_AA)
+        # Color swatches
+        sw = 18
+        cv2.rectangle(legend, (ow - 3*(sw+5) - 10, 5), (ow - 2*(sw+5) - 10, 5+sw), (255, 0, 0), -1)
+        cv2.rectangle(legend, (ow - 2*(sw+5) - 10, 5), (ow - 1*(sw+5) - 10, 5+sw), (0, 255, 0), -1)
+        cv2.rectangle(legend, (ow - 1*(sw+5) - 10, 5), (ow - 10, 5+sw), (0, 0, 255), -1)
+        vis = np.vstack([vis, legend])
+
+        elapsed = time.perf_counter() - t0
         del hook.state
         gc.collect()
-        return {"visualization": vis,
-                "report": f"PCA L{idx}: PC1={v3[0]:.1f}% PC2={v3[1]:.1f}% PC3={v3[2]:.1f}%. {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "report": (
+                f"**Feature PCA** (Layer {idx}): "
+                f"PC1={v3[0]:.1f}%, PC2={v3[1]:.1f}%, PC3={v3[2]:.1f}% variance explained. "
+                f"Regions with similar colors share similar learned feature representations. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # FP32 model for gradient methods
@@ -423,6 +613,19 @@ class XAIAnalyzer:
             gc.collect()
             logger.info("[XAI] FP32 released")
 
+    def _fp32_forward(self, inputs, need_grad_pv=False):
+        """Run FP32 forward pass with all inputs. Optionally enable grad on pixel_values.
+
+        Returns (outputs, pixel_values_tensor).
+        pixel_values_tensor will have requires_grad=True if need_grad_pv is set.
+        """
+        fp32 = self._get_fp32()
+        fwd = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        if need_grad_pv:
+            fwd["pixel_values"] = fwd["pixel_values"].requires_grad_(True)
+        outputs = fp32(**fwd)
+        return outputs, fwd.get("pixel_values")
+
     # ------------------------------------------------------------------
     # 5. GradCAM
     # ------------------------------------------------------------------
@@ -433,7 +636,6 @@ class XAIAnalyzer:
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        # Hook ENCODER layer (not decoder — avoids query token issues)
         target_layer_idx = self._n_encoder - 1
         hook = ActivationGradientHook().register(fp32.layers[target_layer_idx].mlp)
 
@@ -454,31 +656,44 @@ class XAIAnalyzer:
             ml[qs].sum().backward()
 
             if hook.activation is not None and hook.gradient is not None:
-                act = hook.activation  # (1, seq, hidden)
+                act = hook.activation
                 grad = hook.gradient
                 w = grad.mean(dim=-1, keepdim=True)
-                cam = F.relu((act * w).sum(dim=-1))  # (1, seq)
+                cam = F.relu((act * w).sum(dim=-1))
                 cam_np = cam[0].detach().cpu().numpy()
 
-                # Extract patch tokens from encoder layer output
                 n_pre = self._num_prefix
                 seq = cam_np.shape[0]
                 n_avail = seq - n_pre
                 side = int(round(np.sqrt(max(n_avail, 1))))
                 n_use = side * side
                 spatial = cam_np[n_pre:n_pre + n_use].reshape(side, side)
-                vis = self._blend(spatial, image, cv2.COLORMAP_JET)
+                blended = self._blend(spatial, image, cv2.COLORMAP_JET)
+                cam_max = float(spatial.max())
+                hot_pct = float((spatial > spatial.mean() + spatial.std()).mean() * 100)
             else:
-                vis = image.copy()
-                cn = "N/A"
+                blended = image.copy()
+                cn = "N/A (no gradient)"
+                cam_max = 0
+                hot_pct = 0
         finally:
             hook.remove()
             fp32.zero_grad()
 
-        vis = self._title(vis, f"GradCAM | {cn}")
+        extra = f"Target: {cn} (ID {target_class_id}) | Peak={cam_max:.3f} | Hot area={hot_pct:.0f}%"
+        vis = self._annotate(blended, "gradcam", f"GradCAM | {cn}", extra)
+
+        elapsed = time.perf_counter() - t0
         gc.collect()
-        return {"visualization": vis, "target_class": target_class_id,
-                "report": f"GradCAM '{cn}' (ID {target_class_id}). {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "target_class": target_class_id,
+            "report": (
+                f"**GradCAM** (target: '{cn}', ID {target_class_id}): "
+                f"Encoder layer {target_layer_idx}, peak activation={cam_max:.3f}, "
+                f"hot area={hot_pct:.1f}%. Red/yellow = strongest class activation. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # 6. Class Saliency
@@ -486,13 +701,10 @@ class XAIAnalyzer:
 
     def class_saliency(self, image, target_class_id=None):
         t0 = time.perf_counter()
-        fp32 = self._get_fp32()
         inputs, oh, ow = self._preprocess(image)
 
-        # Ensure only pixel_values is passed with grad enabled
-        pv = inputs["pixel_values"].clone().requires_grad_(True)
-
-        outputs = fp32(pixel_values=pv)
+        # Pass ALL inputs (including pixel_mask etc.) with grad enabled on pixel_values
+        outputs, pv = self._fp32_forward(inputs, need_grad_pv=True)
         seg = self._seg_from_outputs(outputs, oh, ow)
         if target_class_id is None:
             target_class_id = self._dominant_class(seg)
@@ -501,19 +713,33 @@ class XAIAnalyzer:
         score = outputs.class_queries_logits[0][:, target_class_id].sum()
         score.backward()
 
+        fp32 = self._get_fp32()
         if pv.grad is not None:
             sal = pv.grad[0].abs().max(dim=0).values.detach().cpu().numpy()
             sal = cv2.resize(sal, (ow, oh), interpolation=cv2.INTER_CUBIC)
-            vis = self._blend(sal, image, cv2.COLORMAP_HOT)
+            sal_max = float(sal.max())
+            sensitive_pct = float((sal > sal.mean() + sal.std()).mean() * 100)
+            blended = self._blend(sal, image, cv2.COLORMAP_HOT)
         else:
-            vis = image.copy()
+            blended = image.copy()
+            sal_max = 0
+            sensitive_pct = 0
             logger.warning("[XAI] Saliency: no gradient on pixel_values")
 
-        vis = self._title(vis, f"Saliency | {cn}")
+        extra = f"Target: {cn} (ID {target_class_id}) | Peak grad={sal_max:.4f} | Sensitive={sensitive_pct:.0f}%"
+        vis = self._annotate(blended, "saliency", f"Saliency | {cn}", extra)
+
+        elapsed = time.perf_counter() - t0
         fp32.zero_grad()
         gc.collect()
-        return {"visualization": vis,
-                "report": f"Saliency '{cn}' (ID {target_class_id}). {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "report": (
+                f"**Class Saliency** (target: '{cn}', ID {target_class_id}): "
+                f"Peak gradient={sal_max:.4f}, sensitive area={sensitive_pct:.1f}%. "
+                f"Bright pixels = high influence on class prediction. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # 7. Chefer Relevancy
@@ -525,7 +751,6 @@ class XAIAnalyzer:
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        # Only hook ENCODER layers for consistent seq_len
         layer_data = []
         handles = []
         for i in range(self._n_encoder):
@@ -557,18 +782,19 @@ class XAIAnalyzer:
 
             outputs.class_queries_logits[0][:, target_class_id].sum().backward()
 
-            # Build relevancy matrix from encoder layers
             first_attn = next((d["attn"] for d in layer_data if d["attn"] is not None), None)
             if first_attn is None:
-                return self._fallback(image, "No attention captured for Chefer")
+                return self._fallback(image, "No attention captured for Chefer", "chefer")
 
             seq = first_attn.shape[-1]
             R = torch.eye(seq)
+            layers_used = 0
 
             for data in layer_data:
                 attn = data.get("attn")
                 if attn is None:
                     continue
+                layers_used += 1
                 am = attn[0].detach().cpu().mean(dim=0)
                 grad = data.get("grad")
                 if grad is not None:
@@ -583,24 +809,34 @@ class XAIAnalyzer:
                 R[:s, :s] = R[:s, :s] + R[:s, :s] @ rel
 
             spatial, gh, gw = self._cls_to_patches(R, gh, gw, is_decoder=False)
-            vis = self._blend(spatial, image)
+            blended = self._blend(spatial, image)
 
-            # Threshold overlay
+            # Threshold overlay — green tint on relevant regions
             thr = spatial.mean()
             mask = cv2.resize((spatial > thr).astype(np.float32), (ow, oh), interpolation=cv2.INTER_NEAREST)
-            ov = vis.copy()
+            ov = blended.copy()
             ov[mask > 0.5] = (ov[mask > 0.5] * 0.7 + np.array([0, 80, 0]) * 0.3).astype(np.uint8)
-            vis = ov
+            relevance_pct = float((spatial > thr).mean() * 100)
 
         finally:
             for h in handles:
                 h.remove()
             fp32.zero_grad()
 
-        vis = self._title(vis, f"Chefer Relevancy | {cn}")
+        extra = f"Target: {cn} | {layers_used} layers | Relevant area={relevance_pct:.0f}% (green tint)"
+        vis = self._annotate(ov, "chefer", f"Chefer Relevancy | {cn}", extra)
+
+        elapsed = time.perf_counter() - t0
         gc.collect()
-        return {"visualization": vis,
-                "report": f"Chefer '{cn}' (ID {target_class_id}), {self._n_encoder} encoder layers. {time.perf_counter()-t0:.1f}s"}
+        return {
+            "visualization": vis,
+            "report": (
+                f"**Chefer Relevancy** (target: '{cn}', ID {target_class_id}): "
+                f"{layers_used}/{self._n_encoder} encoder layers, "
+                f"relevant area={relevance_pct:.1f}%. "
+                f"Green overlay = model-relevant regions. {elapsed:.1f}s"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Report
@@ -628,13 +864,16 @@ class XAIAnalyzer:
 
         ub = []
         if emap is not None:
-            from skimage.segmentation import find_boundaries
-            for cid, _ in info[:5]:
-                bd = find_boundaries(seg_mask == cid, mode="thick")
-                if bd.any():
-                    be = float(emap[bd].mean())
-                    if be > 0.3:
-                        ub.append((self._cname(cid), be))
+            try:
+                from skimage.segmentation import find_boundaries
+                for cid, _ in info[:5]:
+                    bd = find_boundaries(seg_mask == cid, mode="thick")
+                    if bd.any():
+                        be = float(emap[bd].mean())
+                        if be > 0.3:
+                            ub.append((self._cname(cid), be))
+            except ImportError:
+                pass
 
         lines = [
             "# XAI Analysis Report\n",
@@ -648,30 +887,41 @@ class XAIAnalyzer:
 
         lines += [
             "\n## Model Confidence",
-            f"- Mean uncertainty: {me:.3f}",
-            f"- High-uncertainty pixels: {hp:.1f}%",
+            f"- Mean uncertainty: **{me:.3f}**",
+            f"- High-uncertainty pixels: **{hp:.1f}%**",
         ]
         if me < 0.15:
-            lines.append("- **Highly confident** predictions")
+            lines.append("- Overall: **Highly confident** predictions across the scene")
         elif me < 0.35:
-            lines.append("- **Moderate confidence**")
+            lines.append("- Overall: **Moderate confidence** — some ambiguous boundaries")
         else:
-            lines.append("- **Significant uncertainty** — review carefully")
+            lines.append("- Overall: **Significant uncertainty** — review predictions carefully")
 
         if ub:
-            lines.append("\n### Uncertain Boundaries:")
+            lines.append("\n### Uncertain Boundaries")
             for n, e in sorted(ub, key=lambda x: -x[1])[:5]:
-                lines.append(f"- {n}: entropy={e:.3f}")
+                lines.append(f"- **{n}**: boundary entropy={e:.3f}")
 
         lines += [
+            "\n## Method Summary",
+            "| Method | Type | What It Shows |",
+            "|--------|------|--------------|",
+            "| Self-Attention | Attention | Single-layer spatial focus pattern |",
+            "| Attention Rollout | Attention | Cumulative focus across all encoder layers |",
+            "| GradCAM | Gradient | Regions activating target class prediction |",
+            "| Predictive Entropy | Output | Per-pixel classification uncertainty |",
+            "| Feature PCA | Hidden State | Learned feature structure (false-color) |",
+            "| Class Saliency | Gradient | Input pixels influencing class decision |",
+            "| Chefer Relevancy | Attn x Grad | Transformer-specific attribution map |",
             f"\n## Architecture",
-            f"- DINOv3-EoMT-Large: {self._num_layers} layers, {self._num_heads} heads",
-            f"- Patch size: {self._patch_size}, 150-class ADE20K",
-            "\n## Citations",
+            f"- **Model**: DINOv3-EoMT-Large ({self._num_layers} layers, {self._num_heads} heads)",
+            f"- **Patch size**: {self._patch_size}px, **Classes**: 150 (ADE20K)",
+            f"- **Encoder**: {self._n_encoder} layers, **Decoder**: {self._num_layers - self._n_encoder} layers",
+            "\n## References",
             "- Attention Rollout: Abnar & Zuidema (2020)",
             "- GradCAM: Selvaraju et al. (2017)",
             "- Chefer Relevancy: Chefer et al. (2021)",
-            "- Saliency: Simonyan et al. (2014)",
+            "- Saliency Maps: Simonyan et al. (2014)",
         ]
         return {"visualization": ent_result["visualization"], "report": "\n".join(lines)}
 
@@ -679,44 +929,58 @@ class XAIAnalyzer:
     # Orchestrator
     # ------------------------------------------------------------------
 
-    def run_full_analysis(self, image, layer=-1, head=None, target_class_id=None):
+    def run_full_analysis(self, image, layer=-1, head=None, target_class_id=None,
+                          progress_callback=None):
+        """Run all 7 methods. Each method is isolated — one failure won't block others.
+
+        Args:
+            progress_callback: Optional callable(fraction, description) for progress updates.
+        """
         logger.info("[XAI] Running full analysis suite...")
         t0 = time.perf_counter()
         results = {}
 
-        logger.info("[XAI] Phase 1: attention + entropy + PCA...")
-        for key, fn, kw in [
+        def _progress(frac, msg):
+            if progress_callback:
+                try:
+                    progress_callback(frac, desc=msg)
+                except Exception:
+                    pass
+            logger.info(f"[XAI] [{frac*100:.0f}%] {msg}")
+
+        methods = [
             ("attention", self.self_attention_maps, {"layer": layer, "head": head}),
             ("rollout",   self.attention_rollout,   {}),
             ("entropy",   self.predictive_entropy,  {}),
             ("pca",       self.feature_pca,         {"layer": layer}),
-        ]:
+            ("gradcam",   self.gradcam_segmentation, {"target_class_id": target_class_id}),
+            ("saliency",  self.class_saliency,       {"target_class_id": target_class_id}),
+            ("chefer",    self.chefer_relevancy,      {"target_class_id": target_class_id}),
+        ]
+
+        for i, (key, fn, kw) in enumerate(methods):
+            _progress(i / len(methods), f"Running {key}...")
             try:
                 results[key] = fn(image, **kw)
             except Exception as e:
-                logger.error(f"[XAI] {key} failed: {e}")
-                results[key] = self._fallback(image, str(e))
-        gc.collect()
+                logger.error(f"[XAI] {key} failed: {e}\n{traceback.format_exc()}")
+                results[key] = self._fallback(image, str(e), key)
+            gc.collect()
 
-        logger.info("[XAI] Phase 2: gradient methods...")
-        for key, fn, kw in [
-            ("gradcam",  self.gradcam_segmentation, {"target_class_id": target_class_id}),
-            ("saliency", self.class_saliency,       {"target_class_id": target_class_id}),
-            ("chefer",   self.chefer_relevancy,      {"target_class_id": target_class_id}),
-        ]:
-            try:
-                results[key] = fn(image, **kw)
-            except Exception as e:
-                logger.error(f"[XAI] {key} failed: {e}")
-                results[key] = self._fallback(image, str(e))
-        gc.collect()
-
-        logger.info("[XAI] Phase 3: report...")
+        _progress(0.9, "Generating report...")
         try:
             results["report"] = self.generate_xai_report(image)
         except Exception as e:
             logger.error(f"[XAI] report failed: {e}")
-            results["report"] = self._fallback(image, str(e))
+            results["report"] = {"visualization": None, "report": f"Report generation failed: {e}"}
 
-        logger.info(f"[XAI] Full analysis done in {time.perf_counter()-t0:.1f}s")
+        elapsed = time.perf_counter() - t0
+        _progress(1.0, f"Complete ({elapsed:.0f}s)")
+        logger.info(f"[XAI] Full analysis done in {elapsed:.1f}s")
+
+        # Count successes
+        ok = sum(1 for k in ["attention", "rollout", "entropy", "pca", "gradcam", "saliency", "chefer"]
+                 if k in results and "Error" not in results[k].get("report", ""))
+        logger.info(f"[XAI] {ok}/7 methods succeeded")
+
         return results

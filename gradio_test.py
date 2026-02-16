@@ -627,14 +627,14 @@ def create_gradio_interface():
         return "\n".join(report)
 
     # ------------------------------------------------------------------
-    # XAI wrapper
+    # XAI wrapper with progress tracking
     # ------------------------------------------------------------------
-    def xai_wrapper(image_path, method, layer, head_choice, target_class):
-        """Run XAI analysis and return 7 visualizations + report."""
+    def xai_wrapper(image_path, method, layer, head_choice, target_class, progress=gr.Progress(track_tqdm=True)):
+        """Run XAI analysis with Gradio progress bar. Returns 7 visualizations + report."""
         if image_path is None:
-            return [None] * 7 + ["Please upload an image."]
+            return [None] * 7 + ["Upload an image and click **Run XAI Analysis** to begin."]
         if app.xai_analyzer is None:
-            return [None] * 7 + ["XAI analyzer not initialized."]
+            return [None] * 7 + ["XAI analyzer not initialized. Check server logs."]
 
         try:
             image = cv2.imread(image_path, cv2.IMREAD_COLOR)
@@ -642,19 +642,19 @@ def create_gradio_interface():
                 return [None] * 7 + ["Could not load image."]
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            # Parse controls
             layer_idx = int(layer)
             head_idx = None if head_choice == "Mean (all heads)" else int(head_choice.split()[-1])
             class_id = None if target_class == "Auto (dominant)" else int(target_class.split(":")[0])
 
-            # Initialize outputs
             outputs = [None] * 7
             report_text = ""
 
             if method == "Full Suite":
+                progress(0, desc="Starting XAI Full Suite analysis...")
                 results = app.xai_analyzer.run_full_analysis(
                     image_rgb, layer=layer_idx, head=head_idx,
                     target_class_id=class_id,
+                    progress_callback=progress,
                 )
                 key_order = ["attention", "rollout", "gradcam", "entropy", "pca", "saliency", "chefer"]
                 for i, key in enumerate(key_order):
@@ -662,14 +662,22 @@ def create_gradio_interface():
                     vis = r.get("visualization")
                     if vis is not None:
                         outputs[i] = prepare_display_image(vis)
-                report_text = results.get("report", {}).get("report", "")
-                # Append individual method reports
+
+                # Build comprehensive report
+                rpt = results.get("report", {}).get("report", "")
+                parts = [rpt] if rpt else []
+                parts.append("\n---\n## Individual Method Results\n")
+                ok_count = 0
                 for key in key_order:
                     r = results.get(key, {})
-                    if r.get("report"):
-                        report_text += f"\n\n**{key.title()}**: {r['report']}"
+                    rtext = r.get("report", "")
+                    if rtext:
+                        parts.append(f"\n{rtext}")
+                        if "Error" not in rtext:
+                            ok_count += 1
+                parts.insert(1, f"\n**{ok_count}/7 methods completed successfully.**\n")
+                report_text = "\n".join(parts)
 
-                # Release FP32 model after full suite
                 app.xai_analyzer.cleanup_fp32()
 
             else:
@@ -684,14 +692,15 @@ def create_gradio_interface():
                 }
                 if method in method_map:
                     func_name, kwargs, idx = method_map[method]
+                    progress(0.2, desc=f"Running {method}...")
                     func = getattr(app.xai_analyzer, func_name)
                     result = func(image_rgb, **kwargs)
                     vis = result.get("visualization")
                     if vis is not None:
                         outputs[idx] = prepare_display_image(vis)
                     report_text = result.get("report", "")
+                    progress(1.0, desc=f"{method} complete")
 
-                    # Release FP32 if gradient method was used
                     if method in ("GradCAM", "Class Saliency", "Chefer Relevancy"):
                         app.xai_analyzer.cleanup_fp32()
 
@@ -701,7 +710,7 @@ def create_gradio_interface():
             logger.error(f"XAI analysis error: {e}")
             import traceback
             traceback.print_exc()
-            return [None] * 7 + [f"Error: {str(e)}"]
+            return [None] * 7 + [f"**Error**: {str(e)}\n\nOther methods may still work — try running them individually."]
 
     title = "🧠 NeuroNest: Production ML System for Alzheimer's Care Environment Analysis"
     description = """
@@ -1026,10 +1035,18 @@ def create_gradio_interface():
             margin-bottom: clamp(15px, 3vw, 25px);
         }
 
+        .xai-panel {
+            min-height: 200px;
+        }
         .xai-panel img {
             border-radius: 8px;
             border: 2px solid #e1e4e8;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .xai-panel img:hover {
+            transform: scale(1.02);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.2);
         }
 
         .xai-report {
@@ -1041,10 +1058,15 @@ def create_gradio_interface():
             border: 2px solid #c5d0e6;
             line-height: 1.8;
         }
+        .xai-report table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        .xai-report table th, .xai-report table td { padding: 6px 10px; border: 1px solid #ddd; text-align: left; }
+        .xai-report table th { background: #e8eeff; }
 
         @media (prefers-color-scheme: dark) {
             .xai-controls { background: linear-gradient(135deg, #1a1f2e 0%, #141928 100%); border-color: #2d3555; }
             .xai-report { background: #1a1f2e; border-color: #2d3555; }
+            .xai-report table th { background: #2d3555; }
+            .xai-panel img { border-color: #2d3555; }
         }
     """, theme=gr.themes.Base()) as interface:
         with gr.Column(elem_classes="container"):
@@ -1205,11 +1227,19 @@ def create_gradio_interface():
                 # TAB 2: Explainable AI
                 # ============================================================
                 with gr.TabItem("Explainable AI"):
-                    gr.Markdown("## Explainable AI (XAI) Visualization Suite")
-                    gr.Markdown(
-                        "Interpret the DINOv3-EoMT Vision Transformer's decisions using "
-                        "7 research-grade XAI methods. Understand *what* the model sees and *why*."
-                    )
+                    gr.Markdown("""## Explainable AI (XAI) Visualization Suite
+**7 research-grade methods** to interpret how the DINOv3-EoMT Vision Transformer makes decisions.
+All visualizations include colorbars, annotations, and quantitative metrics for comparison.
+
+| Category | Methods | What They Reveal |
+|----------|---------|-----------------|
+| **Attention** | Self-Attention, Rollout | Where the model focuses spatially |
+| **Gradient** | GradCAM, Saliency, Chefer | Which features drive specific class predictions |
+| **Output** | Entropy, Feature PCA | Model confidence and learned representations |
+
+> **Tip**: Run **Full Suite** to compare all methods side-by-side, or select individual methods for faster results.
+> Gradient methods (GradCAM, Saliency, Chefer) load a separate FP32 model and take longer.
+""")
 
                     # Hidden input for sample image Examples
                     with gr.Row(visible=False):
@@ -1235,7 +1265,6 @@ def create_gradio_interface():
                                 type="filepath",
                                 height=350,
                             )
-                            # Connect hidden input to visible one
                             xai_hidden_input.change(
                                 fn=lambda x: x,
                                 inputs=xai_hidden_input,
@@ -1259,14 +1288,16 @@ def create_gradio_interface():
                             xai_layer = gr.Slider(
                                 minimum=0,
                                 maximum=23,
-                                value=23,
+                                value=19,
                                 step=1,
-                                label="Transformer Layer (0-23)",
+                                label="Transformer Layer (0=early features, 19=last encoder, 23=last decoder)",
+                                info="Affects Self-Attention and Feature PCA. Default: last encoder layer.",
                             )
                             xai_head = gr.Dropdown(
                                 choices=["Mean (all heads)"] + [f"Head {i}" for i in range(16)],
                                 value="Mean (all heads)",
                                 label="Attention Head",
+                                info="Affects Self-Attention only. Different heads learn different patterns.",
                             )
                             xai_class = gr.Dropdown(
                                 choices=["Auto (dominant)"] + [
@@ -1274,29 +1305,49 @@ def create_gradio_interface():
                                     for i in range(len(ADE20K_NAMES))
                                 ],
                                 value="Auto (dominant)",
-                                label="Target Class",
+                                label="Target Class (for gradient methods)",
+                                info="Affects GradCAM, Saliency, Chefer. Auto picks the largest class.",
                             )
                             xai_button = gr.Button(
                                 "Run XAI Analysis",
                                 variant="primary",
                                 elem_classes="main-button",
+                                size="lg",
+                            )
+                            gr.Markdown(
+                                "<small>Full Suite: ~2-5 min on CPU. "
+                                "Individual methods: 5-60s each.</small>"
                             )
 
-                    # Output gallery: 4 + 3 grid
-                    gr.Markdown("### Visualizations")
-                    with gr.Row():
-                        xai_attn = gr.Image(label="Self-Attention", interactive=False, elem_classes="xai-panel")
-                        xai_rollout = gr.Image(label="Attention Rollout", interactive=False, elem_classes="xai-panel")
-                        xai_gradcam = gr.Image(label="GradCAM", interactive=False, elem_classes="xai-panel")
-                        xai_entropy = gr.Image(label="Predictive Entropy", interactive=False, elem_classes="xai-panel")
-                    with gr.Row():
-                        xai_pca = gr.Image(label="Feature PCA", interactive=False, elem_classes="xai-panel")
-                        xai_saliency = gr.Image(label="Class Saliency", interactive=False, elem_classes="xai-panel")
-                        xai_chefer = gr.Image(label="Chefer Relevancy", interactive=False, elem_classes="xai-panel")
+                    # Visualization grid with category grouping
+                    gr.Markdown("### Attention-Based Methods")
+                    gr.Markdown("*Where does the model look? These methods visualize spatial attention patterns.*")
+                    with gr.Row(equal_height=True):
+                        xai_attn = gr.Image(label="1. Self-Attention Map", interactive=False, elem_classes="xai-panel")
+                        xai_rollout = gr.Image(label="2. Attention Rollout", interactive=False, elem_classes="xai-panel")
 
-                    gr.Markdown("### Analysis Report")
+                    gr.Markdown("### Gradient-Based Methods")
+                    gr.Markdown("*What drives class predictions? These use backpropagation to attribute importance.*")
+                    with gr.Row(equal_height=True):
+                        xai_gradcam = gr.Image(label="3. GradCAM", interactive=False, elem_classes="xai-panel")
+                        xai_saliency = gr.Image(label="6. Class Saliency", interactive=False, elem_classes="xai-panel")
+                        xai_chefer = gr.Image(label="7. Chefer Relevancy", interactive=False, elem_classes="xai-panel")
+
+                    gr.Markdown("### Output & Feature Analysis")
+                    gr.Markdown("*How confident is the model? What features has it learned?*")
+                    with gr.Row(equal_height=True):
+                        xai_entropy = gr.Image(label="4. Predictive Entropy", interactive=False, elem_classes="xai-panel")
+                        xai_pca = gr.Image(label="5. Feature PCA", interactive=False, elem_classes="xai-panel")
+
+                    gr.Markdown("### Comprehensive Analysis Report")
                     xai_report = gr.Markdown(
-                        value="Select a method and click 'Run XAI Analysis' to begin.",
+                        value=(
+                            "Upload an image and click **Run XAI Analysis** to generate visualizations.\n\n"
+                            "Each visualization includes:\n"
+                            "- **Title bar** with method name and parameters\n"
+                            "- **Colorbar** showing the value scale (high/low)\n"
+                            "- **Info panel** with description and quantitative metrics\n"
+                        ),
                         elem_classes="xai-report",
                     )
 
@@ -1318,14 +1369,17 @@ def create_gradio_interface():
     return interface
 
 if __name__ == "__main__":
-    print(f"🚀 Starting NeuroNest on {DEVICE}")
+    print(f"Starting NeuroNest on {DEVICE}")
     print("EoMT-DINOv3 segmentation engine")
     try:
         interface = create_gradio_interface()
-        interface.queue(max_size=10).launch(
+        interface.queue(
+            max_size=10,
+            default_concurrency_limit=1,
+        ).launch(
             server_name="0.0.0.0",
             server_port=7860,
-            share=False  # HF Spaces provides public URL automatically
+            share=False,  # HF Spaces provides public URL automatically
         )
     except Exception as e:
         logger.error(f"Failed to launch application: {e}")
