@@ -9,7 +9,7 @@ build/
 dist/
 *.egg-info/
 .env
-oneformer/modeling/pixel_decoder/ops/build/
-oneformer/modeling/pixel_decoder/ops/dist/
-oneformer/modeling/pixel_decoder/ops/*.egg-info/
 environment.yml
+
+# Local context docs (never commit)
+docs/
