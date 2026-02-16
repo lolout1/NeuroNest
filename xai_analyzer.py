@@ -1,16 +1,12 @@
 """
 Explainable AI (XAI) analyzer for NeuroNest.
 
-Provides 7 visualization methods for the EoMT-DINOv3 semantic segmentation model:
-1. Self-Attention Maps — raw attention from specific layers/heads
-2. Attention Rollout — aggregated attention across all layers
-3. GradCAM — class-specific activation maps
-4. Predictive Entropy — per-pixel uncertainty
-5. Feature PCA — hidden state structure visualization
-6. Class Saliency — gradient-based input importance
-7. Chefer Relevancy — attention x gradient propagation
+7 visualization methods for EoMT-DINOv3 semantic segmentation:
+1. Self-Attention Maps   2. Attention Rollout   3. GradCAM
+4. Predictive Entropy    5. Feature PCA         6. Class Saliency
+7. Chefer Relevancy
 
-All methods are CPU-compatible and memory-managed for HF Spaces free tier.
+CPU-compatible. Memory-managed for HF Spaces (16 GB).
 """
 
 import numpy as np
@@ -30,93 +26,72 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Hook utilities
+# Hook classes
 # ---------------------------------------------------------------------------
 
 class AttentionCaptureHook:
-    """Forward hook to capture attention weights from EomtAttention modules.
-
-    The EoMT model uses SDPA by default which does NOT return attention weights.
-    Must switch to eager attention (via `_force_eager_attention`) before forward
-    pass for this hook to receive non-None values.
-    """
-
+    """Captures attention weights from EomtAttention.forward() output[1]."""
     def __init__(self):
-        self.attention_weights = None
-        self._handle = None
+        self.weights = None
+        self._h = None
 
-    def hook_fn(self, module, args, output):
+    def _fn(self, module, args, output):
         if isinstance(output, tuple) and len(output) >= 2 and output[1] is not None:
-            self.attention_weights = output[1].detach().cpu()
+            self.weights = output[1].detach().cpu()
 
     def register(self, module):
-        self._handle = module.register_forward_hook(self.hook_fn)
+        self._h = module.register_forward_hook(self._fn)
         return self
 
     def remove(self):
-        if self._handle is not None:
-            self._handle.remove()
-            self._handle = None
-
-    def clear(self):
-        self.attention_weights = None
+        if self._h:
+            self._h.remove()
+            self._h = None
 
 
 class HiddenStateCaptureHook:
-    """Forward hook to capture hidden states from transformer layers."""
-
+    """Captures hidden states (first element of layer output)."""
     def __init__(self):
-        self.hidden_state = None
-        self._handle = None
+        self.state = None
+        self._h = None
 
-    def hook_fn(self, module, args, output):
+    def _fn(self, module, args, output):
         out = output[0] if isinstance(output, tuple) else output
-        self.hidden_state = out.detach().cpu()
+        self.state = out.detach().cpu()
 
     def register(self, module):
-        self._handle = module.register_forward_hook(self.hook_fn)
+        self._h = module.register_forward_hook(self._fn)
         return self
 
     def remove(self):
-        if self._handle is not None:
-            self._handle.remove()
-            self._handle = None
-
-    def clear(self):
-        self.hidden_state = None
+        if self._h:
+            self._h.remove()
+            self._h = None
 
 
 class ActivationGradientHook:
-    """Captures both forward activations and backward gradients from a module."""
-
+    """Captures forward activations AND backward gradients."""
     def __init__(self):
         self.activation = None
         self.gradient = None
-        self._fwd_handle = None
-        self._bwd_handle = None
-
-    def _fwd(self, module, inp, out):
-        self.activation = out[0] if isinstance(out, tuple) else out
-
-    def _bwd(self, module, grad_input, grad_output):
-        self.gradient = grad_output[0]
+        self._fh = None
+        self._bh = None
 
     def register(self, module):
-        self._fwd_handle = module.register_forward_hook(self._fwd)
-        self._bwd_handle = module.register_full_backward_hook(self._bwd)
+        self._fh = module.register_forward_hook(
+            lambda m, i, o: setattr(self, 'activation', o[0] if isinstance(o, tuple) else o)
+        )
+        self._bh = module.register_full_backward_hook(
+            lambda m, gi, go: setattr(self, 'gradient', go[0])
+        )
         return self
 
     def remove(self):
-        if self._fwd_handle is not None:
-            self._fwd_handle.remove()
-        if self._bwd_handle is not None:
-            self._bwd_handle.remove()
-        self._fwd_handle = None
-        self._bwd_handle = None
-
-    def clear(self):
-        self.activation = None
-        self.gradient = None
+        if self._fh:
+            self._fh.remove()
+        if self._bh:
+            self._bh.remove()
+        self._fh = self._bh = None
 
 
 # ---------------------------------------------------------------------------
@@ -124,164 +99,176 @@ class ActivationGradientHook:
 # ---------------------------------------------------------------------------
 
 @contextmanager
-def _force_eager_attention(model):
-    """Temporarily switch EoMT to eager attention so attention weights are returned.
-
-    SDPA (scaled dot-product attention) is faster but returns None for attn_weights.
-    Eager attention computes weights explicitly and returns them from the hook.
-    """
-    original = getattr(model.config, "_attn_implementation", None)
+def _eager_attention(model):
+    """Temporarily switch to eager attention so attention weights are returned.
+    SDPA is default (fast) but returns None for attn_weights."""
+    orig = getattr(model.config, "_attn_implementation", "sdpa")
     model.config._attn_implementation = "eager"
     try:
         yield
     finally:
-        if original is not None:
-            model.config._attn_implementation = original
-        else:
-            model.config._attn_implementation = "sdpa"
+        model.config._attn_implementation = orig
 
 
 # ---------------------------------------------------------------------------
-# Main analyzer
+# XAI Analyzer
 # ---------------------------------------------------------------------------
 
 class XAIAnalyzer:
-    """Explainable AI analysis for EoMT-DINOv3 segmentation model.
-
-    All methods operate on CPU and manage memory for HF Spaces (16 GB RAM).
-    Attention-based methods temporarily switch to eager attention mode.
-    Gradient-based methods lazy-load a separate FP32 model copy.
-    """
+    """All methods CPU-safe, memory-managed, dynamically adapt to model config."""
 
     def __init__(self, eomt_model, eomt_processor, blackspot_predictor=None):
         self.model = eomt_model
         self.processor = eomt_processor
-        self.blackspot_predictor = blackspot_predictor
         self._model_fp32 = None
 
-        # Probe architecture
+        # --- Probe architecture dynamically ---
+        cfg = self.model.config
         self._num_layers = len(self.model.layers)
-        self._num_prefix_tokens = getattr(
+        self._num_heads = getattr(cfg, "num_attention_heads", 16)
+        self._patch_size = getattr(cfg, "patch_size", 16)
+        self._num_queries = getattr(cfg, "num_queries", 100)
+        self._num_prefix = getattr(
             getattr(self.model, "embeddings", None), "num_prefix_tokens", 5
         )
-        self._num_heads = getattr(self.model.config, "num_attention_heads", 16)
-        self._attn_impl = getattr(self.model.config, "_attn_implementation", "unknown")
+
+        # Encoder/decoder split
+        n_dec = getattr(cfg, "num_decoder_layers", getattr(cfg, "decoder_layers", 4))
+        self._n_encoder = self._num_layers - n_dec
 
         logger.info(
-            f"[XAI] Initialized: {self._num_layers} layers, {self._num_heads} heads, "
-            f"{self._num_prefix_tokens} prefix tokens, attn_impl={self._attn_impl}"
+            f"[XAI] {self._num_layers} layers ({self._n_encoder}enc+{n_dec}dec), "
+            f"{self._num_heads} heads, patch={self._patch_size}, "
+            f"prefix={self._num_prefix}, queries={self._num_queries}, "
+            f"attn={getattr(cfg, '_attn_implementation', '?')}"
         )
 
     # ------------------------------------------------------------------
-    # Shared helpers
+    # Helpers
     # ------------------------------------------------------------------
 
-    def _preprocess(self, image: np.ndarray) -> Tuple[dict, int, int]:
+    def _preprocess(self, image: np.ndarray):
         h, w = image.shape[:2]
         inputs = self.processor(images=Image.fromarray(image), return_tensors="pt")
         return inputs, h, w
 
     def _patch_grid(self, inputs: dict) -> Tuple[int, int]:
         _, _, h, w = inputs["pixel_values"].shape
-        return h // 14, w // 14  # DINOv2 patch_size=14
+        return h // self._patch_size, w // self._patch_size
 
-    def _get_dominant_class(self, seg_mask: np.ndarray) -> int:
-        classes, counts = np.unique(seg_mask, return_counts=True)
-        return int(classes[np.argmax(counts)])
+    def _infer_grid(self, seq_len: int, is_decoder: bool = False) -> Tuple[int, int]:
+        """Infer (gh, gw) from attention sequence length."""
+        n = seq_len - self._num_prefix
+        if is_decoder:
+            n -= self._num_queries
+        n = max(n, 1)
+        side = int(round(np.sqrt(n)))
+        return side, side
 
-    def _class_name(self, class_id: int) -> str:
-        if 0 <= class_id < len(ADE20K_NAMES):
-            return ADE20K_NAMES[class_id].split(",")[0].strip()
-        return f"class_{class_id}"
+    def _cls_to_patches(self, attn_2d, gh: int, gw: int, is_decoder: bool = False):
+        """Extract CLS→patch attention row, reshape to spatial. Returns (map, gh, gw)."""
+        seq = attn_2d.shape[-1]
+        n_pre = self._num_prefix
+        n_expected = gh * gw
+        n_avail = seq - n_pre - (self._num_queries if is_decoder else 0)
 
-    def _segmentation_from_outputs(self, outputs, h: int, w: int) -> np.ndarray:
-        seg_maps = self.processor.post_process_semantic_segmentation(
+        if n_avail != n_expected:
+            gh, gw = self._infer_grid(seq, is_decoder)
+            n_expected = gh * gw
+            logger.debug(f"[XAI] Grid inferred: {gh}x{gw} from seq_len={seq}")
+
+        row = attn_2d[0, n_pre:n_pre + n_expected]
+        if isinstance(row, torch.Tensor):
+            row = row.numpy()
+        return row.reshape(gh, gw), gh, gw
+
+    def _dominant_class(self, seg_mask):
+        cls, cnt = np.unique(seg_mask, return_counts=True)
+        return int(cls[np.argmax(cnt)])
+
+    def _cname(self, cid):
+        return ADE20K_NAMES[cid].split(",")[0].strip() if 0 <= cid < len(ADE20K_NAMES) else f"class_{cid}"
+
+    def _seg_from_outputs(self, outputs, h, w):
+        return self.processor.post_process_semantic_segmentation(
             outputs, target_sizes=[(h, w)]
-        )
-        return seg_maps[0].cpu().numpy().astype(np.uint8)
+        )[0].cpu().numpy().astype(np.uint8)
 
     @staticmethod
-    def _blend_heatmap(
-        heatmap: np.ndarray, image: np.ndarray,
-        colormap: int = cv2.COLORMAP_INFERNO, alpha: float = 0.5,
-    ) -> np.ndarray:
+    def _blend(heatmap, image, cmap=cv2.COLORMAP_INFERNO, alpha=0.5):
         h, w = image.shape[:2]
         if heatmap.shape[:2] != (h, w):
             heatmap = cv2.resize(heatmap, (w, h), interpolation=cv2.INTER_CUBIC)
         lo, hi = heatmap.min(), heatmap.max()
         norm = (heatmap - lo) / (hi - lo + 1e-8)
-        colored = cv2.applyColorMap((norm * 255).astype(np.uint8), colormap)
-        colored_rgb = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
-        return cv2.addWeighted(image, 1 - alpha, colored_rgb, alpha, 0)
+        cm = cv2.applyColorMap((norm * 255).astype(np.uint8), cmap)
+        return cv2.addWeighted(image, 1 - alpha, cv2.cvtColor(cm, cv2.COLOR_BGR2RGB), alpha, 0)
 
     @staticmethod
-    def _add_title(image: np.ndarray, title: str) -> np.ndarray:
+    def _title(image, text):
         h, w = image.shape[:2]
         bar = np.full((40, w, 3), 30, dtype=np.uint8)
-        cv2.putText(bar, title, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
-                     0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(bar, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
         return np.vstack([bar, image])
+
+    @staticmethod
+    def _fallback(image, msg):
+        return {"visualization": image, "report": f"Error: {msg}"}
 
     # ------------------------------------------------------------------
     # 1. Self-Attention Maps
     # ------------------------------------------------------------------
 
-    def self_attention_maps(
-        self, image: np.ndarray, layer: int = -1, head: Optional[int] = None,
-    ) -> Dict:
+    def self_attention_maps(self, image, layer=-1, head=None):
         t0 = time.perf_counter()
-        idx = layer if layer >= 0 else self._num_layers + layer
+        # Default to last ENCODER layer for clean patch-only attention
+        idx = layer if layer >= 0 else self._n_encoder - 1
+        idx = min(idx, self._num_layers - 1)
+        is_dec = idx >= self._n_encoder
+
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        hook = AttentionCaptureHook()
-        hook.register(self.model.layers[idx].attention)
+        hook = AttentionCaptureHook().register(self.model.layers[idx].attention)
         try:
-            with _force_eager_attention(self.model), torch.no_grad():
+            with _eager_attention(self.model), torch.no_grad():
                 self.model(**inputs)
         finally:
             hook.remove()
 
-        if hook.attention_weights is None:
-            return self._fallback(image, "Self-attention weights not available")
+        if hook.weights is None:
+            return self._fallback(image, "Attention weights not captured")
 
-        attn = hook.attention_weights[0]  # (heads, seq, seq)
+        attn = hook.weights[0]
         if head is not None and 0 <= head < attn.shape[0]:
-            attn_map = attn[head]
-            head_label = f"Head {head}"
+            a = attn[head]
+            hl = f"Head {head}"
         else:
-            attn_map = attn.mean(dim=0)
-            head_label = "Mean"
+            a = attn.mean(dim=0)
+            hl = "Mean"
 
-        spatial = self._extract_patch_map(attn_map, gh, gw)
-        vis = self._blend_heatmap(spatial, image)
-        vis = self._add_title(vis, f"Self-Attention | Layer {idx} | {head_label}")
+        spatial, gh, gw = self._cls_to_patches(a, gh, gw, is_dec)
+        vis = self._title(self._blend(spatial, image), f"Self-Attention | Layer {idx} | {hl}")
 
-        del hook.attention_weights
+        del hook.weights
         gc.collect()
-        return {
-            "visualization": vis,
-            "report": f"Self-attention layer {idx}, {head_label}. Grid {gh}x{gw}. "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis, "report": f"Self-attention L{idx} {hl}, grid {gh}x{gw}. {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
-    # 2. Attention Rollout
+    # 2. Attention Rollout (encoder layers only)
     # ------------------------------------------------------------------
 
-    def attention_rollout(
-        self, image: np.ndarray, head_fusion: str = "mean", discard_ratio: float = 0.1,
-    ) -> Dict:
+    def attention_rollout(self, image, head_fusion="mean", discard_ratio=0.1):
         t0 = time.perf_counter()
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        hooks = [AttentionCaptureHook() for _ in range(self._num_layers)]
-        for i, h in enumerate(hooks):
-            h.register(self.model.layers[i].attention)
+        # Only encoder layers — decoder layers have different seq_len due to queries
+        n_enc = self._n_encoder
+        hooks = [AttentionCaptureHook().register(self.model.layers[i].attention) for i in range(n_enc)]
 
         try:
-            with _force_eager_attention(self.model), torch.no_grad():
+            with _eager_attention(self.model), torch.no_grad():
                 self.model(**inputs)
         finally:
             for h in hooks:
@@ -290,10 +277,10 @@ class XAIAnalyzer:
         rollout = None
         captured = 0
         for h in hooks:
-            if h.attention_weights is None:
+            if h.weights is None:
                 continue
             captured += 1
-            attn = h.attention_weights[0]
+            attn = h.weights[0]
             if head_fusion == "max":
                 fused = attn.max(dim=0).values
             elif head_fusion == "min":
@@ -303,93 +290,97 @@ class XAIAnalyzer:
 
             fused = fused + torch.eye(fused.shape[0])
             fused = fused / fused.sum(dim=-1, keepdim=True)
-            rollout = fused if rollout is None else rollout @ fused
-            h.attention_weights = None
+
+            if rollout is None:
+                rollout = fused
+            else:
+                # Safety: ensure compatible dimensions
+                if rollout.shape != fused.shape:
+                    logger.warning(f"[XAI] Rollout shape mismatch: {rollout.shape} vs {fused.shape}, stopping")
+                    break
+                rollout = rollout @ fused
+            h.weights = None
 
         del hooks
         gc.collect()
 
         if rollout is None:
-            return self._fallback(image, "Attention rollout failed (no layers captured)")
+            return self._fallback(image, f"Rollout failed (0/{n_enc} layers captured)")
 
-        spatial = self._extract_patch_map(rollout, gh, gw)
+        spatial, gh, gw = self._cls_to_patches(rollout, gh, gw, is_decoder=False)
         if discard_ratio > 0:
             thr = np.percentile(spatial, discard_ratio * 100)
             spatial = np.where(spatial > thr, spatial, 0)
 
-        vis = self._blend_heatmap(spatial, image)
-        vis = self._add_title(vis, f"Attention Rollout | {captured} Layers")
-
+        vis = self._title(self._blend(spatial, image), f"Attention Rollout | {captured} Encoder Layers")
         del rollout
         gc.collect()
-        return {
-            "visualization": vis,
-            "report": f"Attention rollout across {captured} layers ({head_fusion} fusion). "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis, "report": f"Rollout {captured} encoder layers ({head_fusion}). {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
     # 3. Predictive Entropy
     # ------------------------------------------------------------------
 
-    def predictive_entropy(self, image: np.ndarray) -> Dict:
+    def predictive_entropy(self, image):
         t0 = time.perf_counter()
         inputs, oh, ow = self._preprocess(image)
 
         with torch.no_grad():
             outputs = self.model(**inputs)
 
-        mask_probs = torch.sigmoid(outputs.masks_queries_logits[0])  # (Q, H, W)
-        class_probs = F.softmax(outputs.class_queries_logits[0][:, :-1], dim=-1)  # (Q, C)
-        num_classes = class_probs.shape[-1]
+        mp = torch.sigmoid(outputs.masks_queries_logits[0])
+        cp = F.softmax(outputs.class_queries_logits[0][:, :-1], dim=-1)
+        nc = cp.shape[-1]
 
-        pixel_probs = torch.einsum("qhw,qc->chw", mask_probs, class_probs)
-        pixel_probs = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-10)
-        entropy = -(pixel_probs * torch.log(pixel_probs + 1e-10)).sum(dim=0)
-        entropy_norm = (entropy / np.log(num_classes)).numpy()
-        entropy_map = cv2.resize(entropy_norm, (ow, oh), interpolation=cv2.INTER_CUBIC)
+        pp = torch.einsum("qhw,qc->chw", mp, cp)
+        pp = pp / (pp.sum(dim=0, keepdim=True) + 1e-10)
+        ent = -(pp * torch.log(pp + 1e-10)).sum(dim=0)
+        ent_norm = (ent / np.log(nc)).numpy()
+        ent_map = cv2.resize(ent_norm, (ow, oh), interpolation=cv2.INTER_CUBIC)
 
-        vis = self._blend_heatmap(entropy_map, image, cv2.COLORMAP_MAGMA, 0.55)
-        vis = self._add_title(vis, "Predictive Entropy (Uncertainty)")
+        vis = self._title(self._blend(ent_map, image, cv2.COLORMAP_MAGMA, 0.55), "Predictive Entropy")
+        me = float(ent_map.mean())
+        hp = float((ent_map > 0.5).mean() * 100)
 
-        mean_e = float(entropy_map.mean())
-        high_pct = float((entropy_map > 0.5).mean() * 100)
-
-        del outputs, mask_probs, class_probs, pixel_probs, entropy
+        del outputs, mp, cp, pp, ent
         gc.collect()
-        return {
-            "visualization": vis,
-            "entropy_map": entropy_map,
-            "report": f"Entropy — mean: {mean_e:.3f}, high-uncertainty: {high_pct:.1f}%. "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis, "entropy_map": ent_map,
+                "report": f"Entropy mean={me:.3f}, high-unc={hp:.1f}%. {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
     # 4. Feature PCA
     # ------------------------------------------------------------------
 
-    def feature_pca(self, image: np.ndarray, layer: int = -1) -> Dict:
+    def feature_pca(self, image, layer=-1):
         t0 = time.perf_counter()
-        idx = layer if layer >= 0 else self._num_layers + layer
+        idx = layer if layer >= 0 else self._n_encoder - 1
+        idx = min(idx, self._num_layers - 1)
+
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        hook = HiddenStateCaptureHook()
-        hook.register(self.model.layers[idx])
+        hook = HiddenStateCaptureHook().register(self.model.layers[idx])
         try:
             with torch.no_grad():
                 self.model(**inputs)
         finally:
             hook.remove()
 
-        if hook.hidden_state is None:
-            return self._fallback(image, "Failed to capture hidden states")
+        if hook.state is None:
+            return self._fallback(image, "Hidden state not captured")
 
-        hidden = hook.hidden_state[0].numpy()
-        n_pre = self._num_prefix_tokens
-        n_pat = gh * gw
-        feats = hidden[n_pre:n_pre + n_pat]
+        hidden = hook.state[0].numpy()  # (seq_len, hidden_dim)
+        n_pre = self._num_prefix
+        seq_len = hidden.shape[0]
 
+        # Infer actual patch count from seq_len
+        is_dec = idx >= self._n_encoder
+        n_patches_avail = seq_len - n_pre - (self._num_queries if is_dec else 0)
+        side = int(round(np.sqrt(max(n_patches_avail, 1))))
+        n_use = side * side
+        gh, gw = side, side
+
+        feats = hidden[n_pre:n_pre + n_use]
         centered = feats - feats.mean(axis=0, keepdims=True)
         U, S, _ = np.linalg.svd(centered, full_matrices=False)
         comps = U[:, :3] * S[:3]
@@ -398,40 +389,31 @@ class XAIAnalyzer:
             lo, hi = comps[:, c].min(), comps[:, c].max()
             comps[:, c] = (comps[:, c] - lo) / (hi - lo + 1e-8) * 255
 
-        pca_img = cv2.resize(
-            comps.reshape(gh, gw, 3).astype(np.uint8), (ow, oh), interpolation=cv2.INTER_CUBIC
-        )
-        vis = self._add_title(pca_img, f"Feature PCA | Layer {idx}")
+        pca_img = cv2.resize(comps.reshape(gh, gw, 3).astype(np.uint8), (ow, oh), interpolation=cv2.INTER_CUBIC)
+        vis = self._title(pca_img, f"Feature PCA | Layer {idx}")
 
-        total_var = (S ** 2).sum()
-        var3 = (S[:3] ** 2) / total_var * 100
+        tv = (S ** 2).sum()
+        v3 = (S[:3] ** 2) / tv * 100
 
-        del hook.hidden_state
+        del hook.state
         gc.collect()
-        return {
-            "visualization": vis,
-            "report": f"Feature PCA layer {idx}. Variance: PC1={var3[0]:.1f}%, "
-                      f"PC2={var3[1]:.1f}%, PC3={var3[2]:.1f}%. "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis,
+                "report": f"PCA L{idx}: PC1={v3[0]:.1f}% PC2={v3[1]:.1f}% PC3={v3[2]:.1f}%. {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
-    # FP32 model management (for gradient methods)
+    # FP32 model for gradient methods
     # ------------------------------------------------------------------
 
-    def _get_fp32_model(self):
+    def _get_fp32(self):
         if self._model_fp32 is not None:
             return self._model_fp32
-
-        logger.info("[XAI] Loading FP32 model for gradient-based methods...")
+        logger.info("[XAI] Loading FP32 model for gradient methods...")
         from transformers import AutoModelForUniversalSegmentation
-        model_id = getattr(self.model.config, "_name_or_path",
-                           "tue-mps/ade20k_semantic_eomt_large_512")
-        self._model_fp32 = AutoModelForUniversalSegmentation.from_pretrained(model_id)
+        mid = getattr(self.model.config, "_name_or_path", "tue-mps/ade20k_semantic_eomt_large_512")
+        self._model_fp32 = AutoModelForUniversalSegmentation.from_pretrained(mid)
         self._model_fp32.eval()
-        # Force eager attention so hooks can capture weights
         self._model_fp32.config._attn_implementation = "eager"
-        logger.info("[XAI] FP32 model loaded (eager attention)")
+        logger.info("[XAI] FP32 loaded (eager attn)")
         return self._model_fp32
 
     def cleanup_fp32(self):
@@ -439,343 +421,302 @@ class XAIAnalyzer:
             del self._model_fp32
             self._model_fp32 = None
             gc.collect()
-            logger.info("[XAI] FP32 model released")
+            logger.info("[XAI] FP32 released")
 
     # ------------------------------------------------------------------
     # 5. GradCAM
     # ------------------------------------------------------------------
 
-    def gradcam_segmentation(
-        self, image: np.ndarray, target_class_id: Optional[int] = None,
-    ) -> Dict:
+    def gradcam_segmentation(self, image, target_class_id=None):
         t0 = time.perf_counter()
-        fp32 = self._get_fp32_model()
+        fp32 = self._get_fp32()
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        hook = ActivationGradientHook()
-        hook.register(fp32.layers[-1].mlp)
+        # Hook ENCODER layer (not decoder — avoids query token issues)
+        target_layer_idx = self._n_encoder - 1
+        hook = ActivationGradientHook().register(fp32.layers[target_layer_idx].mlp)
 
         try:
             outputs = fp32(**inputs)
-            seg_mask = self._segmentation_from_outputs(outputs, oh, ow)
-
+            seg = self._seg_from_outputs(outputs, oh, ow)
             if target_class_id is None:
-                target_class_id = self._get_dominant_class(seg_mask)
-            cname = self._class_name(target_class_id)
+                target_class_id = self._dominant_class(seg)
+            cn = self._cname(target_class_id)
 
-            # Backprop from target class mask logits
-            mask_logits = outputs.masks_queries_logits[0]
-            class_logits = outputs.class_queries_logits[0]
-            preds = class_logits[:, :-1].argmax(dim=-1)
-            queries = (preds == target_class_id).nonzero(as_tuple=True)[0]
-            if len(queries) == 0:
-                queries = class_logits[:, target_class_id].argmax(dim=0, keepdim=True)
+            ml = outputs.masks_queries_logits[0]
+            cl = outputs.class_queries_logits[0]
+            preds = cl[:, :-1].argmax(dim=-1)
+            qs = (preds == target_class_id).nonzero(as_tuple=True)[0]
+            if len(qs) == 0:
+                qs = cl[:, target_class_id].argmax(dim=0, keepdim=True)
 
-            mask_logits[queries].sum().backward()
+            ml[qs].sum().backward()
 
             if hook.activation is not None and hook.gradient is not None:
-                weights = hook.gradient.mean(dim=-1, keepdim=True)
-                cam = F.relu((hook.activation * weights).sum(dim=-1))
-                spatial = cam[0, self._num_prefix_tokens:
-                              self._num_prefix_tokens + gh * gw].detach().cpu().numpy()
-                spatial = spatial.reshape(gh, gw)
-                vis = self._blend_heatmap(spatial, image, cv2.COLORMAP_JET)
+                act = hook.activation  # (1, seq, hidden)
+                grad = hook.gradient
+                w = grad.mean(dim=-1, keepdim=True)
+                cam = F.relu((act * w).sum(dim=-1))  # (1, seq)
+                cam_np = cam[0].detach().cpu().numpy()
+
+                # Extract patch tokens from encoder layer output
+                n_pre = self._num_prefix
+                seq = cam_np.shape[0]
+                n_avail = seq - n_pre
+                side = int(round(np.sqrt(max(n_avail, 1))))
+                n_use = side * side
+                spatial = cam_np[n_pre:n_pre + n_use].reshape(side, side)
+                vis = self._blend(spatial, image, cv2.COLORMAP_JET)
             else:
                 vis = image.copy()
-                cname = "N/A"
+                cn = "N/A"
         finally:
             hook.remove()
             fp32.zero_grad()
 
-        vis = self._add_title(vis, f"GradCAM | {cname}")
-        del hook
+        vis = self._title(vis, f"GradCAM | {cn}")
         gc.collect()
-        return {
-            "visualization": vis,
-            "target_class": target_class_id,
-            "report": f"GradCAM for '{cname}' (ID {target_class_id}). "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis, "target_class": target_class_id,
+                "report": f"GradCAM '{cn}' (ID {target_class_id}). {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
     # 6. Class Saliency
     # ------------------------------------------------------------------
 
-    def class_saliency(
-        self, image: np.ndarray, target_class_id: Optional[int] = None,
-    ) -> Dict:
+    def class_saliency(self, image, target_class_id=None):
         t0 = time.perf_counter()
-        fp32 = self._get_fp32_model()
+        fp32 = self._get_fp32()
         inputs, oh, ow = self._preprocess(image)
-        pv = inputs["pixel_values"].requires_grad_(True)
+
+        # Ensure only pixel_values is passed with grad enabled
+        pv = inputs["pixel_values"].clone().requires_grad_(True)
 
         outputs = fp32(pixel_values=pv)
-        seg_mask = self._segmentation_from_outputs(outputs, oh, ow)
-
+        seg = self._seg_from_outputs(outputs, oh, ow)
         if target_class_id is None:
-            target_class_id = self._get_dominant_class(seg_mask)
-        cname = self._class_name(target_class_id)
+            target_class_id = self._dominant_class(seg)
+        cn = self._cname(target_class_id)
 
-        outputs.class_queries_logits[0][:, target_class_id].sum().backward()
+        score = outputs.class_queries_logits[0][:, target_class_id].sum()
+        score.backward()
 
-        saliency = pv.grad[0].abs().max(dim=0).values.detach().cpu().numpy()
-        saliency = cv2.resize(saliency, (ow, oh), interpolation=cv2.INTER_CUBIC)
+        if pv.grad is not None:
+            sal = pv.grad[0].abs().max(dim=0).values.detach().cpu().numpy()
+            sal = cv2.resize(sal, (ow, oh), interpolation=cv2.INTER_CUBIC)
+            vis = self._blend(sal, image, cv2.COLORMAP_HOT)
+        else:
+            vis = image.copy()
+            logger.warning("[XAI] Saliency: no gradient on pixel_values")
 
-        vis = self._blend_heatmap(saliency, image, cv2.COLORMAP_HOT)
-        vis = self._add_title(vis, f"Saliency | {cname}")
-
+        vis = self._title(vis, f"Saliency | {cn}")
         fp32.zero_grad()
         gc.collect()
-        return {
-            "visualization": vis,
-            "report": f"Class saliency for '{cname}' (ID {target_class_id}). "
-                      f"Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis,
+                "report": f"Saliency '{cn}' (ID {target_class_id}). {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
     # 7. Chefer Relevancy
     # ------------------------------------------------------------------
 
-    def chefer_relevancy(
-        self, image: np.ndarray, target_class_id: Optional[int] = None,
-    ) -> Dict:
+    def chefer_relevancy(self, image, target_class_id=None):
         t0 = time.perf_counter()
-        fp32 = self._get_fp32_model()
+        fp32 = self._get_fp32()
         inputs, oh, ow = self._preprocess(image)
         gh, gw = self._patch_grid(inputs)
 
-        # Hook every attention layer for both attn weights and gradients
+        # Only hook ENCODER layers for consistent seq_len
         layer_data = []
         handles = []
-        for i in range(self._num_layers):
+        for i in range(self._n_encoder):
             data = {"attn": None, "grad": None}
 
             def mk_fwd(d):
-                def fn(mod, args, out):
-                    if isinstance(out, tuple) and len(out) >= 2 and out[1] is not None:
-                        d["attn"] = out[1]
+                def fn(m, a, o):
+                    if isinstance(o, tuple) and len(o) >= 2 and o[1] is not None:
+                        d["attn"] = o[1]
                 return fn
 
             def mk_bwd(d):
-                def fn(mod, gi, go):
+                def fn(m, gi, go):
                     if len(go) >= 2 and go[1] is not None:
                         d["grad"] = go[1]
                 return fn
 
-            attn_mod = fp32.layers[i].attention
-            handles.append(attn_mod.register_forward_hook(mk_fwd(data)))
-            handles.append(attn_mod.register_full_backward_hook(mk_bwd(data)))
+            mod = fp32.layers[i].attention
+            handles.append(mod.register_forward_hook(mk_fwd(data)))
+            handles.append(mod.register_full_backward_hook(mk_bwd(data)))
             layer_data.append(data)
 
         try:
             outputs = fp32(**inputs)
-            seg_mask = self._segmentation_from_outputs(outputs, oh, ow)
-
+            seg = self._seg_from_outputs(outputs, oh, ow)
             if target_class_id is None:
-                target_class_id = self._get_dominant_class(seg_mask)
-            cname = self._class_name(target_class_id)
+                target_class_id = self._dominant_class(seg)
+            cn = self._cname(target_class_id)
 
             outputs.class_queries_logits[0][:, target_class_id].sum().backward()
 
-            n_pre = self._num_prefix_tokens
-            n_pat = gh * gw
-            seq = n_pre + n_pat
+            # Build relevancy matrix from encoder layers
+            first_attn = next((d["attn"] for d in layer_data if d["attn"] is not None), None)
+            if first_attn is None:
+                return self._fallback(image, "No attention captured for Chefer")
+
+            seq = first_attn.shape[-1]
             R = torch.eye(seq)
 
             for data in layer_data:
                 attn = data.get("attn")
                 if attn is None:
                     continue
-                attn_mean = attn[0].detach().cpu().mean(dim=0)
+                am = attn[0].detach().cpu().mean(dim=0)
                 grad = data.get("grad")
                 if grad is not None:
-                    grad_mean = grad[0].detach().cpu().mean(dim=0)
-                    rel = torch.clamp(attn_mean * grad_mean, min=0)
+                    gm = grad[0].detach().cpu().mean(dim=0)
+                    rel = torch.clamp(am * gm, min=0)
                 else:
-                    rel = attn_mean
+                    rel = am
 
                 s = min(rel.shape[0], seq)
                 rel = rel[:s, :s] + torch.eye(s)
                 rel = rel / (rel.sum(dim=-1, keepdim=True) + 1e-10)
                 R[:s, :s] = R[:s, :s] + R[:s, :s] @ rel
 
-            spatial = R[0, n_pre:n_pre + n_pat].numpy().reshape(gh, gw)
-            vis = self._blend_heatmap(spatial, image)
+            spatial, gh, gw = self._cls_to_patches(R, gh, gw, is_decoder=False)
+            vis = self._blend(spatial, image)
 
             # Threshold overlay
             thr = spatial.mean()
-            mask = cv2.resize((spatial > thr).astype(np.float32), (ow, oh),
-                              interpolation=cv2.INTER_NEAREST)
-            overlay = vis.copy()
-            overlay[mask > 0.5] = (overlay[mask > 0.5] * 0.7 +
-                                   np.array([0, 80, 0]) * 0.3).astype(np.uint8)
-            vis = overlay
+            mask = cv2.resize((spatial > thr).astype(np.float32), (ow, oh), interpolation=cv2.INTER_NEAREST)
+            ov = vis.copy()
+            ov[mask > 0.5] = (ov[mask > 0.5] * 0.7 + np.array([0, 80, 0]) * 0.3).astype(np.uint8)
+            vis = ov
 
         finally:
             for h in handles:
                 h.remove()
             fp32.zero_grad()
 
-        vis = self._add_title(vis, f"Chefer Relevancy | {cname}")
-        del layer_data, handles
+        vis = self._title(vis, f"Chefer Relevancy | {cn}")
         gc.collect()
-        return {
-            "visualization": vis,
-            "report": f"Chefer relevancy for '{cname}' (ID {target_class_id}), "
-                      f"{self._num_layers} layers. Time: {time.perf_counter()-t0:.1f}s",
-        }
+        return {"visualization": vis,
+                "report": f"Chefer '{cn}' (ID {target_class_id}), {self._n_encoder} encoder layers. {time.perf_counter()-t0:.1f}s"}
 
     # ------------------------------------------------------------------
-    # Report generator
+    # Report
     # ------------------------------------------------------------------
 
-    def generate_xai_report(
-        self, image: np.ndarray, seg_mask: Optional[np.ndarray] = None,
-    ) -> Dict:
+    def generate_xai_report(self, image, seg_mask=None):
         t0 = time.perf_counter()
-
-        entropy_result = self.predictive_entropy(image)
+        ent_result = self.predictive_entropy(image)
 
         if seg_mask is None:
             inputs, oh, ow = self._preprocess(image)
             with torch.no_grad():
                 outputs = self.model(**inputs)
-            seg_mask = self._segmentation_from_outputs(outputs, oh, ow)
+            seg_mask = self._seg_from_outputs(outputs, oh, ow)
             del outputs
             gc.collect()
 
-        classes, counts = np.unique(seg_mask, return_counts=True)
+        cls, cnt = np.unique(seg_mask, return_counts=True)
         total = seg_mask.size
-        class_info = sorted(zip(classes, counts), key=lambda x: -x[1])
+        info = sorted(zip(cls, cnt), key=lambda x: -x[1])
 
-        entropy_map = entropy_result.get("entropy_map")
-        mean_e = float(entropy_map.mean()) if entropy_map is not None else 0
-        high_pct = float((entropy_map > 0.5).mean() * 100) if entropy_map is not None else 0
+        emap = ent_result.get("entropy_map")
+        me = float(emap.mean()) if emap is not None else 0
+        hp = float((emap > 0.5).mean() * 100) if emap is not None else 0
 
-        uncertain_boundaries = []
-        if entropy_map is not None:
+        ub = []
+        if emap is not None:
             from skimage.segmentation import find_boundaries
-            for cid, cnt in class_info[:5]:
-                boundary = find_boundaries(seg_mask == cid, mode="thick")
-                if boundary.any():
-                    be = float(entropy_map[boundary].mean())
+            for cid, _ in info[:5]:
+                bd = find_boundaries(seg_mask == cid, mode="thick")
+                if bd.any():
+                    be = float(emap[bd].mean())
                     if be > 0.3:
-                        uncertain_boundaries.append((self._class_name(cid), be))
+                        ub.append((self._cname(cid), be))
 
         lines = [
-            "# Explainable AI Analysis Report\n",
-            f"*Generated in {time.perf_counter()-t0:.1f}s*\n",
+            "# XAI Analysis Report\n",
             "## Scene Composition",
-            f"The model identified **{len(classes)} object categories**:\n",
+            f"**{len(cls)} categories** detected:\n",
         ]
-        for cid, cnt in class_info[:8]:
-            pct = cnt / total * 100
-            bar = "\u2588" * int(pct / 5) + "\u2591" * (20 - int(pct / 5))
-            lines.append(f"- **{self._class_name(cid)}**: {pct:.1f}% `{bar}`")
+        for cid, c in info[:8]:
+            p = c / total * 100
+            bar = "\u2588" * int(p / 5) + "\u2591" * max(0, 20 - int(p / 5))
+            lines.append(f"- **{self._cname(cid)}**: {p:.1f}% `{bar}`")
 
         lines += [
             "\n## Model Confidence",
-            f"- **Mean uncertainty**: {mean_e:.3f} (0=certain, 1=uncertain)",
-            f"- **High uncertainty regions**: {high_pct:.1f}% of image",
+            f"- Mean uncertainty: {me:.3f}",
+            f"- High-uncertainty pixels: {hp:.1f}%",
         ]
-        if mean_e < 0.15:
-            lines.append("- Model is **highly confident** in its predictions")
-        elif mean_e < 0.35:
-            lines.append("- Model shows **moderate confidence** overall")
+        if me < 0.15:
+            lines.append("- **Highly confident** predictions")
+        elif me < 0.35:
+            lines.append("- **Moderate confidence**")
         else:
-            lines.append("- Model shows **significant uncertainty** — review predictions carefully")
+            lines.append("- **Significant uncertainty** — review carefully")
 
-        if uncertain_boundaries:
+        if ub:
             lines.append("\n### Uncertain Boundaries:")
-            for name, ent in sorted(uncertain_boundaries, key=lambda x: -x[1])[:5]:
-                lines.append(f"- {name} boundary: entropy={ent:.3f}")
+            for n, e in sorted(ub, key=lambda x: -x[1])[:5]:
+                lines.append(f"- {n}: entropy={e:.3f}")
 
         lines += [
-            "\n## Architecture",
-            f"- {self._num_layers}-layer, {self._num_heads}-head Vision Transformer (DINOv3-EoMT-Large)",
-            f"- 150-class ADE20K semantic segmentation at 512x512 resolution",
-            "\n## Methodology",
-            "- **Entropy**: Shannon entropy of per-pixel class probability distributions",
-            "- **Attention Rollout**: Abnar & Zuidema (2020)",
-            "- **GradCAM**: Selvaraju et al. (2017)",
-            "- **Chefer Relevancy**: Chefer et al. (2021)",
-            "- **Feature PCA**: Principal component analysis of intermediate representations",
-            "- **Saliency**: Simonyan et al. (2014)",
+            f"\n## Architecture",
+            f"- DINOv3-EoMT-Large: {self._num_layers} layers, {self._num_heads} heads",
+            f"- Patch size: {self._patch_size}, 150-class ADE20K",
+            "\n## Citations",
+            "- Attention Rollout: Abnar & Zuidema (2020)",
+            "- GradCAM: Selvaraju et al. (2017)",
+            "- Chefer Relevancy: Chefer et al. (2021)",
+            "- Saliency: Simonyan et al. (2014)",
         ]
-
-        return {
-            "visualization": entropy_result["visualization"],
-            "report": "\n".join(lines),
-        }
+        return {"visualization": ent_result["visualization"], "report": "\n".join(lines)}
 
     # ------------------------------------------------------------------
     # Orchestrator
     # ------------------------------------------------------------------
 
-    def run_full_analysis(
-        self, image: np.ndarray,
-        layer: int = -1, head: Optional[int] = None,
-        target_class_id: Optional[int] = None,
-    ) -> Dict:
+    def run_full_analysis(self, image, layer=-1, head=None, target_class_id=None):
         logger.info("[XAI] Running full analysis suite...")
         t0 = time.perf_counter()
         results = {}
 
-        # Phase 1: no-gradient methods (quantized model OK)
         logger.info("[XAI] Phase 1: attention + entropy + PCA...")
-        for key, fn, kwargs in [
+        for key, fn, kw in [
             ("attention", self.self_attention_maps, {"layer": layer, "head": head}),
             ("rollout",   self.attention_rollout,   {}),
             ("entropy",   self.predictive_entropy,  {}),
             ("pca",       self.feature_pca,         {"layer": layer}),
         ]:
             try:
-                results[key] = fn(image, **kwargs)
+                results[key] = fn(image, **kw)
             except Exception as e:
                 logger.error(f"[XAI] {key} failed: {e}")
                 results[key] = self._fallback(image, str(e))
         gc.collect()
 
-        # Phase 2: gradient methods (FP32 model)
-        logger.info("[XAI] Phase 2: gradient-based methods...")
-        for key, fn, kwargs in [
+        logger.info("[XAI] Phase 2: gradient methods...")
+        for key, fn, kw in [
             ("gradcam",  self.gradcam_segmentation, {"target_class_id": target_class_id}),
             ("saliency", self.class_saliency,       {"target_class_id": target_class_id}),
             ("chefer",   self.chefer_relevancy,      {"target_class_id": target_class_id}),
         ]:
             try:
-                results[key] = fn(image, **kwargs)
+                results[key] = fn(image, **kw)
             except Exception as e:
                 logger.error(f"[XAI] {key} failed: {e}")
                 results[key] = self._fallback(image, str(e))
         gc.collect()
 
-        # Phase 3: report
-        logger.info("[XAI] Phase 3: generating report...")
+        logger.info("[XAI] Phase 3: report...")
         try:
             results["report"] = self.generate_xai_report(image)
         except Exception as e:
-            logger.error(f"[XAI] Report failed: {e}")
+            logger.error(f"[XAI] report failed: {e}")
             results["report"] = self._fallback(image, str(e))
 
-        elapsed = time.perf_counter() - t0
-        logger.info(f"[XAI] Full analysis completed in {elapsed:.1f}s")
+        logger.info(f"[XAI] Full analysis done in {time.perf_counter()-t0:.1f}s")
         return results
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-
-    def _extract_patch_map(self, attn_matrix: torch.Tensor, gh: int, gw: int) -> np.ndarray:
-        """Extract CLS-to-patch attention from row 0, reshape to spatial grid."""
-        n_pre = self._num_prefix_tokens
-        n_pat = gh * gw
-        row = attn_matrix[0, n_pre:n_pre + n_pat]
-        if isinstance(row, torch.Tensor):
-            row = row.numpy()
-        return row.reshape(gh, gw)
-
-    @staticmethod
-    def _fallback(image: np.ndarray, message: str) -> Dict:
-        return {"visualization": image, "report": f"Error: {message}"}
