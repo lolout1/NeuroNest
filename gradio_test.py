@@ -568,6 +568,7 @@ def create_gradio_interface():
         if results['blackspot']:
             bs = results['blackspot']
             blackspot_report = (
+                f"**Legend:** Green = detected floor area, Red = blackspot hazards  \n"
                 f"**Floor Area:** {bs['floor_area']:,} pixels  \n"
                 f"**Blackspot Area:** {bs['blackspot_area']:,} pixels  \n"
                 f"**Coverage:** {bs['coverage_percentage']:.2f}%  \n"
@@ -1050,7 +1051,7 @@ improve quality of life and reduce fall risk for individuals with Alzheimer's di
                             seg_display = gr.Image(label="150-class ADE20K semantic segmentation", interactive=False, elem_classes="image-output")
                         with gr.TabItem("Blackspot Detection"):
                             if blackspot_ok:
-                                blackspot_display = gr.Image(label="Floor blackspot instances with confidence scores", interactive=False, elem_classes="image-output")
+                                blackspot_display = gr.Image(label="Blackspot Detection (Green = floor, Red = blackspot hazards)", interactive=False, elem_classes="image-output")
                             else:
                                 blackspot_display = gr.Image(visible=False)
                                 gr.Markdown("Blackspot detection model not available in this deployment.")
