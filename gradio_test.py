@@ -527,15 +527,18 @@ def create_gradio_interface():
     if not seg_ok:
         raise RuntimeError("Failed to initialize EoMT segmentation")
     
-    # Define sample images
-    SAMPLE_IMAGES = [
+    # Define sample images (real room photos + originals)
+    SAMPLE_IMAGES = [img for img in [
         "samples/example1.png",
         "samples/example2.png",
-        "samples/example3.png"
-    ]
-    
+        "samples/example3.png",
+        "samples/example1_original.png",
+        "samples/example2_original.png",
+        "samples/example3_original.png",
+    ] if os.path.exists(img)]
+
     # Check if sample images exist
-    sample_images_available = all(os.path.exists(img) for img in SAMPLE_IMAGES)
+    sample_images_available = len(SAMPLE_IMAGES) > 0
     
     def analyze_wrapper(
         image_path,
@@ -627,90 +630,117 @@ def create_gradio_interface():
         return "\n".join(report)
 
     # ------------------------------------------------------------------
-    # XAI wrapper with progress tracking
+    # XAI wrapper with progress tracking + caching + notebook HTML
     # ------------------------------------------------------------------
+    from xai_analyzer import render_notebook_html
+
     def xai_wrapper(image_path, method, layer, head_choice, target_class, progress=gr.Progress(track_tqdm=True)):
-        """Run XAI analysis with Gradio progress bar. Returns 7 visualizations + report."""
+        """Run XAI analysis. Returns notebook-style HTML output."""
         if image_path is None:
-            return [None] * 7 + ["Upload an image and click **Run XAI Analysis** to begin."]
+            return "<p>Upload an image and click <b>Run XAI Analysis</b> to begin.</p>"
         if app.xai_analyzer is None:
-            return [None] * 7 + ["XAI analyzer not initialized. Check server logs."]
+            return "<p style='color:red;'>XAI analyzer not initialized. Check server logs.</p>"
 
         try:
             image = cv2.imread(image_path, cv2.IMREAD_COLOR)
             if image is None:
-                return [None] * 7 + ["Could not load image."]
+                return "<p style='color:red;'>Could not load image.</p>"
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             layer_idx = int(layer)
             head_idx = None if head_choice == "Mean (all heads)" else int(head_choice.split()[-1])
             class_id = None if target_class == "Auto (dominant)" else int(target_class.split(":")[0])
 
-            outputs = [None] * 7
-            report_text = ""
-
             if method == "Full Suite":
+                # Check cache first
+                cached = app.xai_analyzer.load_cached(image_path)
+                if cached:
+                    progress(1.0, desc="Loaded from cache")
+                    return render_notebook_html(cached, image_rgb)
+
                 progress(0, desc="Starting XAI Full Suite analysis...")
                 results = app.xai_analyzer.run_full_analysis(
                     image_rgb, layer=layer_idx, head=head_idx,
                     target_class_id=class_id,
                     progress_callback=progress,
                 )
-                key_order = ["attention", "rollout", "gradcam", "entropy", "pca", "integrated_gradients", "chefer"]
-                for i, key in enumerate(key_order):
-                    r = results.get(key, {})
-                    vis = r.get("visualization")
-                    if vis is not None:
-                        outputs[i] = prepare_display_image(vis)
-
-                # Build comprehensive report
-                rpt = results.get("report", {}).get("report", "")
-                parts = [rpt] if rpt else []
-                parts.append("\n---\n## Individual Method Results\n")
-                ok_count = 0
-                for key in key_order:
-                    r = results.get(key, {})
-                    rtext = r.get("report", "")
-                    if rtext:
-                        parts.append(f"\n{rtext}")
-                        if "Error" not in rtext:
-                            ok_count += 1
-                parts.insert(1, f"\n**{ok_count}/7 methods completed successfully.**\n")
-                report_text = "\n".join(parts)
+                # Cache results
+                try:
+                    app.xai_analyzer.save_results(results, image_path)
+                except Exception as e:
+                    logger.warning(f"Cache save failed: {e}")
 
                 app.xai_analyzer.cleanup_fp32()
+                return render_notebook_html(results, image_rgb)
 
             else:
                 method_map = {
-                    "Self-Attention": ("self_attention_maps", {"layer": layer_idx, "head": head_idx}, 0),
-                    "Attention Rollout": ("attention_rollout", {}, 1),
-                    "GradCAM": ("gradcam_segmentation", {"target_class_id": class_id}, 2),
-                    "Predictive Entropy": ("predictive_entropy", {}, 3),
-                    "Feature PCA": ("feature_pca", {"layer": layer_idx}, 4),
-                    "Integrated Gradients": ("integrated_gradients", {"target_class_id": class_id}, 5),
-                    "Chefer Relevancy": ("chefer_relevancy", {"target_class_id": class_id}, 6),
+                    "Self-Attention": ("self_attention_maps", {"layer": layer_idx, "head": head_idx}),
+                    "Attention Rollout": ("attention_rollout", {}),
+                    "GradCAM": ("gradcam_segmentation", {"target_class_id": class_id}),
+                    "Predictive Entropy": ("predictive_entropy", {}),
+                    "Feature PCA": ("feature_pca", {"layer": layer_idx}),
+                    "Integrated Gradients": ("integrated_gradients", {"target_class_id": class_id}),
+                    "Chefer Relevancy": ("chefer_relevancy", {"target_class_id": class_id}),
                 }
                 if method in method_map:
-                    func_name, kwargs, idx = method_map[method]
+                    func_name, kwargs = method_map[method]
                     progress(0.2, desc=f"Running {method}...")
                     func = getattr(app.xai_analyzer, func_name)
                     result = func(image_rgb, **kwargs)
-                    vis = result.get("visualization")
-                    if vis is not None:
-                        outputs[idx] = prepare_display_image(vis)
-                    report_text = result.get("report", "")
                     progress(1.0, desc=f"{method} complete")
 
                     if method in ("GradCAM", "Integrated Gradients", "Chefer Relevancy"):
                         app.xai_analyzer.cleanup_fp32()
 
-            return outputs + [report_text]
+                    # Wrap single result for notebook renderer
+                    method_key_map = {
+                        "Self-Attention": "attention",
+                        "Attention Rollout": "rollout",
+                        "GradCAM": "gradcam",
+                        "Predictive Entropy": "entropy",
+                        "Feature PCA": "pca",
+                        "Integrated Gradients": "integrated_gradients",
+                        "Chefer Relevancy": "chefer",
+                    }
+                    single_results = {method_key_map[method]: result}
+                    return render_notebook_html(single_results, image_rgb)
+
+            return "<p>Unknown method selected.</p>"
 
         except Exception as e:
             logger.error(f"XAI analysis error: {e}")
             import traceback
             traceback.print_exc()
-            return [None] * 7 + [f"**Error**: {str(e)}\n\nOther methods may still work — try running them individually."]
+            return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>"
+
+    def load_sample_gallery():
+        """Load pre-computed XAI analyses for all sample images."""
+        html_parts = []
+        found = 0
+        for img_path in SAMPLE_IMAGES:
+            if not os.path.exists(img_path):
+                continue
+            cached = app.xai_analyzer.load_cached(img_path) if app.xai_analyzer else None
+            if cached is None:
+                continue
+            found += 1
+            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            html_parts.append(f'<h2 style="margin:32px 0 8px;color:#4f46e5;">Sample: {os.path.basename(img_path)}</h2>')
+            html_parts.append(render_notebook_html(cached, img_rgb))
+            html_parts.append('<hr style="margin:40px 0;border:2px solid #e5e7eb;">')
+
+        if not html_parts:
+            return (
+                '<div style="text-align:center;padding:40px;color:#6b7280;">'
+                '<p style="font-size:1.2em;">No pre-computed analyses found.</p>'
+                '<p>Run <b>Full Suite</b> analysis on a sample image first — results will be cached here automatically.</p>'
+                '</div>'
+            )
+        return f'<div style="max-width:1200px;margin:auto;"><p style="color:#059669;font-weight:600;">{found} cached analyses available</p>' + "\n".join(html_parts) + '</div>'
 
     title = "NeuroNest"
 
@@ -813,20 +843,10 @@ def create_gradio_interface():
             padding: 16px; background: #f9fafb;
             border-radius: 12px; border: 1px solid #e5e7eb; margin-bottom: 16px;
         }
-        .xai-panel { min-height: 180px; }
-        .xai-panel img {
-            border-radius: 10px; border: 1px solid #e5e7eb;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            transition: transform 0.15s ease;
-        }
-        .xai-panel img:hover { transform: scale(1.015); box-shadow: 0 4px 16px rgba(0,0,0,0.14); }
         .xai-report {
-            max-width: 100%; margin: 16px 0; padding: 20px;
-            background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb; line-height: 1.7;
+            max-width: 100%; margin: 16px 0; border-radius: 12px;
+            border: 1px solid #e5e7eb; overflow-y: auto;
         }
-        .xai-report table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-        .xai-report table th, .xai-report table td { padding: 6px 10px; border: 1px solid #e5e7eb; text-align: left; }
-        .xai-report table th { background: #f3f4f6; font-weight: 600; }
 
         /* ========== Examples ========== */
         .examples-holder img {
@@ -1055,135 +1075,132 @@ improve quality of life and reduce fall risk for individuals with Alzheimer's di
                 # TAB: Explainable AI
                 # ============================================================
                 with gr.TabItem("Model Interpretability"):
-                    gr.Markdown("""**7 research-grade XAI methods** to interpret the DINOv3-EoMT Vision Transformer's decisions.
-Each visualization includes colorbars, quantitative metrics, and method citations.
+                    gr.Markdown("""**7 research-grade XAI methods** for interpreting DINOv3-EoMT Vision Transformer decisions.
+Results are displayed in a scrollable notebook-style format with detailed analysis for each method.
+Analyses are **cached automatically** — re-running the same image loads instantly.""")
 
-| Category | Methods | Insight |
-|----------|---------|---------|
-| **Attention** | Self-Attention, Rollout | Where the model focuses spatially |
-| **Gradient** | GradCAM, Integrated Gradients, Chefer | What drives specific class predictions |
-| **Output** | Entropy, Feature PCA | Confidence levels and learned representations |
-""")
+                    with gr.Tabs():
+                        # --- Sub-tab: Interactive Analysis ---
+                        with gr.TabItem("Run Analysis"):
+                            # Hidden input for sample image Examples
+                            with gr.Row(visible=False):
+                                xai_hidden_input = gr.Image(
+                                    label="XAI Image",
+                                    type="filepath",
+                                )
 
-                    # Hidden input for sample image Examples
-                    with gr.Row(visible=False):
-                        xai_hidden_input = gr.Image(
-                            label="XAI Image",
-                            type="filepath",
-                        )
+                            if sample_images_available:
+                                with gr.Column(elem_classes="sample-section"):
+                                    gr.Markdown("**Select a sample** or upload your own image below.")
+                                    gr.Examples(
+                                        examples=SAMPLE_IMAGES,
+                                        inputs=xai_hidden_input,
+                                        label="",
+                                        examples_per_page=6,
+                                    )
 
-                    if sample_images_available:
-                        with gr.Column(elem_classes="sample-section"):
-                            gr.Markdown("### Sample Images")
-                            gr.Examples(
-                                examples=SAMPLE_IMAGES,
-                                inputs=xai_hidden_input,
-                                label="",
-                                examples_per_page=3,
+                            with gr.Row(elem_classes="xai-controls"):
+                                with gr.Column(scale=2):
+                                    xai_image_input = gr.Image(
+                                        label="Upload Image",
+                                        type="filepath",
+                                        height=300,
+                                    )
+                                    xai_hidden_input.change(
+                                        fn=lambda x: x,
+                                        inputs=xai_hidden_input,
+                                        outputs=xai_image_input,
+                                    )
+                                with gr.Column(scale=1):
+                                    xai_method = gr.Radio(
+                                        choices=[
+                                            "Full Suite",
+                                            "Self-Attention",
+                                            "Attention Rollout",
+                                            "GradCAM",
+                                            "Predictive Entropy",
+                                            "Feature PCA",
+                                            "Integrated Gradients",
+                                            "Chefer Relevancy",
+                                        ],
+                                        value="Full Suite",
+                                        label="XAI Method",
+                                    )
+                                    with gr.Accordion("Advanced Controls", open=False):
+                                        xai_layer = gr.Slider(
+                                            minimum=0,
+                                            maximum=23,
+                                            value=19,
+                                            step=1,
+                                            label="Transformer Layer",
+                                            info="0=early features, 19=last encoder, 23=last decoder",
+                                        )
+                                        xai_head = gr.Dropdown(
+                                            choices=["Mean (all heads)"] + [f"Head {i}" for i in range(16)],
+                                            value="Mean (all heads)",
+                                            label="Attention Head",
+                                            info="Affects Self-Attention only",
+                                        )
+                                        xai_class = gr.Dropdown(
+                                            choices=["Auto (dominant)"] + [
+                                                f"{i}: {ADE20K_NAMES[i].split(',')[0]}"
+                                                for i in range(len(ADE20K_NAMES))
+                                            ],
+                                            value="Auto (dominant)",
+                                            label="Target Class",
+                                            info="Affects GradCAM, Integrated Gradients, Chefer",
+                                        )
+                                    xai_button = gr.Button(
+                                        "Run XAI Analysis",
+                                        variant="primary",
+                                        elem_classes="main-button",
+                                        size="lg",
+                                    )
+                                    gr.Markdown(
+                                        "<small>Full Suite: ~3-5 min on CPU. "
+                                        "Cached results load instantly.</small>"
+                                    )
+
+                            # Notebook-style scrollable output
+                            xai_notebook = gr.HTML(
+                                value=(
+                                    '<div style="text-align:center;padding:60px 20px;color:#6b7280;">'
+                                    '<p style="font-size:1.3em;font-weight:600;color:#4f46e5;">Model Interpretability Analysis</p>'
+                                    '<p style="max-width:600px;margin:12px auto;line-height:1.6;">'
+                                    'Upload an image and click <b>Run XAI Analysis</b> to generate a comprehensive '
+                                    'notebook-style report with 7 visualization methods, detailed descriptions, '
+                                    'and cross-method analysis.</p>'
+                                    '<p style="font-size:0.85em;margin-top:16px;">Methods: Self-Attention &bull; '
+                                    'Attention Rollout &bull; GradCAM &bull; Predictive Entropy &bull; '
+                                    'Feature PCA &bull; Integrated Gradients &bull; Chefer Relevancy</p>'
+                                    '</div>'
+                                ),
+                                elem_classes="xai-report",
                             )
 
-                    with gr.Row(elem_classes="xai-controls"):
-                        with gr.Column(scale=2):
-                            xai_image_input = gr.Image(
-                                label="Upload Image",
-                                type="filepath",
-                                height=350,
-                            )
-                            xai_hidden_input.change(
-                                fn=lambda x: x,
-                                inputs=xai_hidden_input,
-                                outputs=xai_image_input,
-                            )
-                        with gr.Column(scale=1):
-                            xai_method = gr.Radio(
-                                choices=[
-                                    "Full Suite",
-                                    "Self-Attention",
-                                    "Attention Rollout",
-                                    "GradCAM",
-                                    "Predictive Entropy",
-                                    "Feature PCA",
-                                    "Integrated Gradients",
-                                    "Chefer Relevancy",
-                                ],
-                                value="Full Suite",
-                                label="XAI Method",
-                            )
-                            xai_layer = gr.Slider(
-                                minimum=0,
-                                maximum=23,
-                                value=19,
-                                step=1,
-                                label="Transformer Layer (0=early features, 19=last encoder, 23=last decoder)",
-                                info="Affects Self-Attention and Feature PCA. Default: last encoder layer.",
-                            )
-                            xai_head = gr.Dropdown(
-                                choices=["Mean (all heads)"] + [f"Head {i}" for i in range(16)],
-                                value="Mean (all heads)",
-                                label="Attention Head",
-                                info="Affects Self-Attention only. Different heads learn different patterns.",
-                            )
-                            xai_class = gr.Dropdown(
-                                choices=["Auto (dominant)"] + [
-                                    f"{i}: {ADE20K_NAMES[i].split(',')[0]}"
-                                    for i in range(len(ADE20K_NAMES))
-                                ],
-                                value="Auto (dominant)",
-                                label="Target Class (for gradient methods)",
-                                info="Affects GradCAM, Integrated Gradients, Chefer. Auto picks the largest class.",
-                            )
-                            xai_button = gr.Button(
-                                "Run XAI Analysis",
-                                variant="primary",
-                                elem_classes="main-button",
-                                size="lg",
-                            )
-                            gr.Markdown(
-                                "<small>Full Suite: ~2-5 min on CPU. "
-                                "Individual methods: 5-60s each.</small>"
+                            xai_button.click(
+                                fn=xai_wrapper,
+                                inputs=[xai_image_input, xai_method, xai_layer, xai_head, xai_class],
+                                outputs=[xai_notebook],
                             )
 
-                    # Visualization grid with category grouping
-                    gr.Markdown("### Attention-Based Methods")
-                    gr.Markdown("*Where does the model look? These methods visualize spatial attention patterns.*")
-                    with gr.Row(equal_height=True):
-                        xai_attn = gr.Image(label="1. Self-Attention Map", interactive=False, elem_classes="xai-panel")
-                        xai_rollout = gr.Image(label="2. Attention Rollout", interactive=False, elem_classes="xai-panel")
-
-                    gr.Markdown("### Gradient-Based Methods")
-                    gr.Markdown("*What drives class predictions? Gradient-based attribution methods identify influential regions and pixels.*")
-                    with gr.Row(equal_height=True):
-                        xai_gradcam = gr.Image(label="3. GradCAM", interactive=False, elem_classes="xai-panel")
-                        xai_saliency = gr.Image(label="6. Integrated Gradients", interactive=False, elem_classes="xai-panel")
-                        xai_chefer = gr.Image(label="7. Chefer Relevancy", interactive=False, elem_classes="xai-panel")
-
-                    gr.Markdown("### Output & Feature Analysis")
-                    gr.Markdown("*How confident is the model? What features has it learned?*")
-                    with gr.Row(equal_height=True):
-                        xai_entropy = gr.Image(label="4. Predictive Entropy", interactive=False, elem_classes="xai-panel")
-                        xai_pca = gr.Image(label="5. Feature PCA", interactive=False, elem_classes="xai-panel")
-
-                    gr.Markdown("### Comprehensive Analysis Report")
-                    xai_report = gr.Markdown(
-                        value=(
-                            "Upload an image and click **Run XAI Analysis** to generate visualizations.\n\n"
-                            "Each visualization includes:\n"
-                            "- **Title bar** with method name and parameters\n"
-                            "- **Colorbar** showing the value scale (high/low)\n"
-                            "- **Info panel** with description and quantitative metrics\n"
-                        ),
-                        elem_classes="xai-report",
-                    )
-
-                    xai_button.click(
-                        fn=xai_wrapper,
-                        inputs=[xai_image_input, xai_method, xai_layer, xai_head, xai_class],
-                        outputs=[
-                            xai_attn, xai_rollout, xai_gradcam, xai_entropy,
-                            xai_pca, xai_saliency, xai_chefer,
-                            xai_report,
-                        ],
-                    )
+                        # --- Sub-tab: Sample Gallery ---
+                        with gr.TabItem("Sample Gallery"):
+                            gr.Markdown("""**Pre-computed analyses** for sample images.
+Run Full Suite on any sample image — results are cached and displayed here automatically.
+Scroll through each analysis to see all 7 XAI methods with detailed interpretations.""")
+                            gallery_html = gr.HTML(
+                                value=(
+                                    '<div style="text-align:center;padding:40px;color:#6b7280;">'
+                                    '<p>Click <b>Refresh Gallery</b> to load cached analyses, or run Full Suite '
+                                    'analysis on a sample image first.</p></div>'
+                                ),
+                            )
+                            gallery_refresh = gr.Button("Refresh Gallery", variant="secondary")
+                            gallery_refresh.click(
+                                fn=load_sample_gallery,
+                                outputs=[gallery_html],
+                            )
 
                 # ============================================================
                 # TAB: Technical Details

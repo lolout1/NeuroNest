@@ -13,3 +13,6 @@ environment.yml
 
 # Local context docs (never commit)
 docs/
+
+# XAI result cache (generated at runtime)
+xai_cache/

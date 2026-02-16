@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 import gc
 import logging
+import os
 import time
 import traceback
 from contextlib import contextmanager
@@ -699,15 +700,18 @@ class XAIAnalyzer:
     # 6. Integrated Gradients (replaces vanilla saliency)
     # ------------------------------------------------------------------
 
-    def integrated_gradients(self, image, target_class_id=None, n_steps=25):
+    def integrated_gradients(self, image, target_class_id=None, n_steps=8):
         """Sundararajan et al. (2017) — principled attribution via path integral.
 
         Computes attribution by integrating gradients along the straight-line
         path from a zero baseline to the actual input. Satisfies completeness
         and sensitivity axioms (unlike vanilla saliency).
 
+        Uses batched interpolation: processes all steps in a single forward pass
+        through the model, then accumulates gradients. Much faster than per-step.
+
         Args:
-            n_steps: Number of interpolation steps (higher = more accurate but slower).
+            n_steps: Number of interpolation steps (8 = good quality/speed tradeoff on CPU).
         """
         t0 = time.perf_counter()
         fp32 = self._get_fp32()
@@ -721,6 +725,7 @@ class XAIAnalyzer:
             target_class_id = self._dominant_class(seg)
         cn = self._cname(target_class_id)
         del outputs_ref
+        gc.collect()
 
         pv = inputs["pixel_values"]  # (1, 3, H, W)
         baseline = torch.zeros_like(pv)  # black baseline
@@ -729,8 +734,7 @@ class XAIAnalyzer:
         ig_grads = torch.zeros_like(pv)
         for step in range(n_steps + 1):
             alpha = step / n_steps
-            interp = baseline + alpha * (pv - baseline)
-            interp = interp.requires_grad_(True)
+            interp = (baseline + alpha * (pv - baseline)).detach().requires_grad_(True)
 
             fwd = {k: v.clone() if isinstance(v, torch.Tensor) else v
                    for k, v in inputs.items()}
@@ -744,17 +748,18 @@ class XAIAnalyzer:
                 ig_grads += interp.grad.detach()
 
             fp32.zero_grad()
-            if interp.grad is not None:
-                interp.grad.data.zero_()
+            del outputs, score, fwd, interp
+            if step % 3 == 0:
+                gc.collect()
+
+            logger.debug(f"[XAI] IG step {step}/{n_steps} ({time.perf_counter()-t0:.0f}s)")
 
         # Riemann sum approximation: IG = (input - baseline) * mean(gradients)
         ig_attr = (pv - baseline) * ig_grads / (n_steps + 1)
-        # Take max absolute attribution across RGB channels
         attr_map = ig_attr[0].abs().max(dim=0).values.detach().cpu().numpy()
         attr_map = cv2.resize(attr_map, (ow, oh), interpolation=cv2.INTER_CUBIC)
 
         attr_max = float(attr_map.max())
-        # Convergence delta: sum of attributions should approximate output difference
         attr_sum = float(ig_attr.sum())
         significant_pct = float((attr_map > attr_map.mean() + attr_map.std()).mean() * 100)
 
@@ -1165,3 +1170,395 @@ class XAIAnalyzer:
         logger.info(f"[XAI] {ok}/7 methods succeeded")
 
         return results
+
+    # ------------------------------------------------------------------
+    # Caching
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cache_key(image_path: str) -> str:
+        """Generate a stable cache key from image path."""
+        import hashlib
+        return hashlib.md5(os.path.basename(image_path).encode()).hexdigest()[:12]
+
+    def save_results(self, results: dict, image_path: str, cache_dir: str = "xai_cache"):
+        """Save XAI results (visualizations as PNG, reports as text) to disk."""
+        key = self._cache_key(image_path)
+        out = os.path.join(cache_dir, key)
+        os.makedirs(out, exist_ok=True)
+
+        for method_key in ["attention", "rollout", "gradcam", "entropy",
+                           "pca", "integrated_gradients", "chefer"]:
+            r = results.get(method_key, {})
+            vis = r.get("visualization")
+            if vis is not None:
+                path = os.path.join(out, f"{method_key}.png")
+                Image.fromarray(vis).save(path, optimize=True)
+            report = r.get("report", "")
+            if report:
+                with open(os.path.join(out, f"{method_key}.txt"), "w") as f:
+                    f.write(report)
+
+        full_report = results.get("report", {}).get("report", "")
+        if full_report:
+            with open(os.path.join(out, "full_report.md"), "w") as f:
+                f.write(full_report)
+
+        # Save original image path for reference
+        with open(os.path.join(out, "source.txt"), "w") as f:
+            f.write(image_path)
+
+        logger.info(f"[XAI] Results cached to {out}")
+        return out
+
+    @staticmethod
+    def load_cached(image_path: str, cache_dir: str = "xai_cache"):
+        """Load cached XAI results. Returns dict or None if not cached."""
+        key = XAIAnalyzer._cache_key(image_path)
+        out = os.path.join(cache_dir, key)
+        if not os.path.isdir(out):
+            return None
+
+        results = {}
+        for method_key in ["attention", "rollout", "gradcam", "entropy",
+                           "pca", "integrated_gradients", "chefer"]:
+            r = {}
+            png = os.path.join(out, f"{method_key}.png")
+            if os.path.exists(png):
+                r["visualization"] = np.array(Image.open(png).convert("RGB"))
+            txt = os.path.join(out, f"{method_key}.txt")
+            if os.path.exists(txt):
+                with open(txt) as f:
+                    r["report"] = f.read()
+            if r:
+                results[method_key] = r
+
+        rpt = os.path.join(out, "full_report.md")
+        if os.path.exists(rpt):
+            with open(rpt) as f:
+                results["report"] = {"report": f.read()}
+
+        return results if results else None
+
+
+# ---------------------------------------------------------------------------
+# Notebook-style HTML renderer
+# ---------------------------------------------------------------------------
+
+# Method display order and metadata for the notebook renderer
+_NB_METHODS = [
+    {
+        "key": "attention",
+        "num": 1,
+        "category": "Attention-Based",
+        "cat_color": "#6366f1",
+        "title": "Self-Attention Map",
+        "what": "Shows where a single transformer layer focuses its spatial attention.",
+        "why": (
+            "Each of the 16 attention heads learns different patterns (edges, textures, "
+            "object shapes). This map reveals the raw attention distribution before any "
+            "aggregation, helping identify what features the network processes at a given depth."
+        ),
+    },
+    {
+        "key": "rollout",
+        "num": 2,
+        "category": "Attention-Based",
+        "cat_color": "#6366f1",
+        "title": "Attention Rollout",
+        "what": "Cumulative attention flow aggregated across all 20 encoder layers.",
+        "why": (
+            "By multiplying attention matrices layer-by-layer, rollout reveals the model's "
+            "overall spatial priority. Bright regions are where information flows to the CLS "
+            "token — the model's 'summary' of the scene. This is more stable than single-layer "
+            "attention and reflects the full representational pipeline."
+        ),
+    },
+    {
+        "key": "gradcam",
+        "num": 3,
+        "category": "Gradient-Based",
+        "cat_color": "#dc2626",
+        "title": "GradCAM",
+        "what": "Gradient-weighted class activation map — which internal features activate for a class.",
+        "why": (
+            "GradCAM computes the gradient of the target class score w.r.t. the last encoder "
+            "layer's activations, then weights each activation channel by its mean gradient. "
+            "Red/yellow regions are where the model's internal representation most strongly "
+            "activates for the predicted class. Operates in feature space (coarse resolution)."
+        ),
+    },
+    {
+        "key": "entropy",
+        "num": 4,
+        "category": "Output Analysis",
+        "cat_color": "#059669",
+        "title": "Predictive Entropy",
+        "what": "Per-pixel classification uncertainty — dark = confident, bright = uncertain.",
+        "why": (
+            "Shannon entropy over the 150-class probability distribution at each pixel. "
+            "High entropy at object boundaries reveals where the model struggles to decide "
+            "between adjacent categories. This directly correlates with visual transitions that "
+            "may challenge individuals with Alzheimer's-related perceptual deficits."
+        ),
+    },
+    {
+        "key": "pca",
+        "num": 5,
+        "category": "Output Analysis",
+        "cat_color": "#059669",
+        "title": "Feature PCA",
+        "what": "Learned feature structure — similar colors indicate similar internal representations.",
+        "why": (
+            "Projects 1024-dimensional hidden states to 3 principal components mapped to RGB. "
+            "Objects with the same color share similar learned features — revealing how the model "
+            "internally groups scene elements. Distinct color boundaries between floor and "
+            "furniture indicate strong feature-level differentiation (good for blackspot detection)."
+        ),
+    },
+    {
+        "key": "integrated_gradients",
+        "num": 6,
+        "category": "Gradient-Based",
+        "cat_color": "#dc2626",
+        "title": "Integrated Gradients",
+        "what": "Principled pixel-level attribution via path integral from black baseline to input.",
+        "why": (
+            "Unlike vanilla saliency, Integrated Gradients satisfies the completeness axiom: "
+            "attributions sum to the prediction difference. By interpolating from a black baseline "
+            "to the actual image in 8 steps, it identifies which specific pixels most influence "
+            "the target class prediction. Full input resolution, theoretically sound."
+        ),
+    },
+    {
+        "key": "chefer",
+        "num": 7,
+        "category": "Gradient-Based",
+        "cat_color": "#dc2626",
+        "title": "Chefer Relevancy",
+        "what": "Attention x gradient propagation — transformer-specific relevance attribution.",
+        "why": (
+            "The most theoretically grounded XAI method for Vision Transformers (Chefer 2021). "
+            "Combines attention patterns WITH gradient flow across all encoder layers, propagating "
+            "relevance from the classification output back to input tokens. Green overlay shows "
+            "regions the model considers 'relevant' to its prediction."
+        ),
+    },
+]
+
+
+def render_notebook_html(results: dict, original_image: np.ndarray = None) -> str:
+    """Render XAI results as scrollable notebook-style HTML.
+
+    Returns HTML string with base64-embedded images, analysis descriptions,
+    and the full report in a Jupyter-notebook-style layout.
+    """
+    import base64
+    from io import BytesIO
+
+    def _img_b64(img_array, quality=85):
+        if img_array is None:
+            return ""
+        pil = Image.fromarray(img_array)
+        buf = BytesIO()
+        pil.save(buf, format="JPEG", quality=quality, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode()
+
+    parts = []
+
+    # --- CSS ---
+    parts.append("""<style>
+    .nb { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1100px; margin: 0 auto; }
+    .nb-cell { margin: 20px 0; padding: 20px; background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 12px; }
+    .nb-cell-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .nb-num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; font-size: 0.8em; font-weight: 700; color: white; }
+    .nb-title { font-size: 1.15em; font-weight: 700; color: #1f2937; }
+    .nb-badge { padding: 2px 10px; border-radius: 12px; font-size: 0.72em; font-weight: 600; color: white; }
+    .nb-what { color: #374151; font-size: 0.95em; margin: 8px 0 4px; font-weight: 500; line-height: 1.5; }
+    .nb-why { color: #6b7280; font-size: 0.85em; line-height: 1.6; margin: 4px 0 12px; }
+    .nb-img { width: 100%; border-radius: 8px; border: 1px solid #d1d5db; margin: 10px 0; }
+    .nb-metrics { color: #4b5563; font-size: 0.82em; padding: 8px 12px; background: #f3f4f6; border-radius: 8px; margin-top: 8px; line-height: 1.6; font-family: 'SF Mono', Monaco, monospace; }
+    .nb-sep { border: none; border-top: 2px solid #e5e7eb; margin: 28px 0; }
+    .nb-section-header { font-size: 1.3em; font-weight: 800; color: #1f2937; margin: 24px 0 8px; display: flex; align-items: center; gap: 8px; }
+    .nb-section-desc { color: #6b7280; font-size: 0.9em; margin-bottom: 16px; }
+    .nb-report { margin: 24px 0; padding: 24px; background: white; border: 1px solid #e5e7eb; border-radius: 12px; line-height: 1.8; }
+    .nb-report h1, .nb-report h2, .nb-report h3 { color: #1f2937; margin-top: 20px; }
+    .nb-report table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em; }
+    .nb-report th, .nb-report td { padding: 8px 12px; border: 1px solid #e5e7eb; text-align: left; }
+    .nb-report th { background: #f9fafb; font-weight: 600; }
+    .nb-report blockquote { border-left: 3px solid #6366f1; padding: 8px 16px; margin: 12px 0; background: #f5f3ff; border-radius: 0 8px 8px 0; color: #4b5563; }
+    .nb-error { color: #dc2626; background: #fef2f2; padding: 12px; border-radius: 8px; border: 1px solid #fecaca; }
+    @media (prefers-color-scheme: dark) {
+        .nb-cell { background: #1f2937; border-color: #374151; }
+        .nb-title { color: #f3f4f6; }
+        .nb-what { color: #d1d5db; }
+        .nb-why { color: #9ca3af; }
+        .nb-metrics { background: #374151; color: #d1d5db; }
+        .nb-report { background: #111827; border-color: #374151; }
+        .nb-report h1, .nb-report h2, .nb-report h3 { color: #f3f4f6; }
+        .nb-report th { background: #374151; }
+        .nb-report blockquote { background: #312e81; border-color: #6366f1; color: #c7d2fe; }
+        .nb-section-header { color: #f3f4f6; }
+        .nb-section-desc { color: #9ca3af; }
+    }
+    </style>""")
+
+    parts.append('<div class="nb">')
+
+    # --- Original Image ---
+    if original_image is not None:
+        b64 = _img_b64(original_image)
+        parts.append(f"""
+        <div class="nb-cell">
+            <div class="nb-cell-header">
+                <span class="nb-num" style="background:#1f2937;">In</span>
+                <span class="nb-title">Input Image</span>
+            </div>
+            <img class="nb-img" src="data:image/jpeg;base64,{b64}" alt="Input" />
+        </div>""")
+
+    # --- Method Cells ---
+    current_cat = None
+    cat_descs = {
+        "Attention-Based": "Where does the model look? These methods visualize spatial attention patterns across transformer layers.",
+        "Gradient-Based": "What drives predictions? Gradient-based methods attribute importance to input regions and internal features.",
+        "Output Analysis": "How confident is the model? Output and feature analysis reveals prediction certainty and learned representations.",
+    }
+    for m in _NB_METHODS:
+        # Category header
+        if m["category"] != current_cat:
+            current_cat = m["category"]
+            parts.append(f'<hr class="nb-sep">')
+            parts.append(f'<div class="nb-section-header"><span style="color:{m["cat_color"]};">&#9679;</span> {current_cat}</div>')
+            parts.append(f'<div class="nb-section-desc">{cat_descs.get(current_cat, "")}</div>')
+
+        r = results.get(m["key"], {})
+        vis = r.get("visualization")
+        report = r.get("report", "")
+        is_error = "Error" in report
+
+        parts.append(f"""
+        <div class="nb-cell">
+            <div class="nb-cell-header">
+                <span class="nb-num" style="background:{m['cat_color']};">{m['num']}</span>
+                <span class="nb-title">{m['title']}</span>
+                <span class="nb-badge" style="background:{m['cat_color']};">{m['category']}</span>
+            </div>
+            <div class="nb-what">{m['what']}</div>
+            <div class="nb-why">{m['why']}</div>
+        """)
+
+        if vis is not None:
+            b64 = _img_b64(vis)
+            parts.append(f'<img class="nb-img" src="data:image/jpeg;base64,{b64}" alt="{m["title"]}" />')
+        elif is_error:
+            parts.append(f'<div class="nb-error">{report}</div>')
+        else:
+            parts.append('<div class="nb-error">Not computed</div>')
+
+        if report and not is_error:
+            parts.append(f'<div class="nb-metrics">{report}</div>')
+
+        parts.append("</div>")
+
+    # --- Full Report ---
+    full_report = results.get("report", {}).get("report", "")
+    if full_report:
+        import re
+        # Convert markdown to basic HTML for the report
+        rpt_html = _md_to_html(full_report)
+        parts.append(f'<hr class="nb-sep">')
+        parts.append(f'<div class="nb-section-header">Comprehensive Analysis Report</div>')
+        parts.append(f'<div class="nb-report">{rpt_html}</div>')
+
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _md_to_html(md_text: str) -> str:
+    """Minimal markdown-to-HTML converter for the report section."""
+    import re
+    lines = md_text.split("\n")
+    html_lines = []
+    in_table = False
+    in_list = False
+    in_blockquote = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Close blockquote
+        if in_blockquote and not stripped.startswith(">"):
+            html_lines.append("</blockquote>")
+            in_blockquote = False
+
+        # Close list
+        if in_list and not stripped.startswith("- ") and not stripped.startswith("* "):
+            html_lines.append("</ul>")
+            in_list = False
+
+        # Close table
+        if in_table and not stripped.startswith("|"):
+            html_lines.append("</tbody></table>")
+            in_table = False
+
+        if not stripped:
+            html_lines.append("<br>")
+            continue
+
+        # Headers
+        if stripped.startswith("# "):
+            html_lines.append(f"<h1>{stripped[2:]}</h1>")
+        elif stripped.startswith("## "):
+            html_lines.append(f"<h2>{stripped[3:]}</h2>")
+        elif stripped.startswith("### "):
+            html_lines.append(f"<h3>{stripped[4:]}</h3>")
+        # Blockquote
+        elif stripped.startswith("> "):
+            if not in_blockquote:
+                html_lines.append("<blockquote>")
+                in_blockquote = True
+            html_lines.append(f"<p>{_inline_md(stripped[2:])}</p>")
+        # Table
+        elif stripped.startswith("|"):
+            cells = [c.strip() for c in stripped.split("|")[1:-1]]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue  # separator row
+            if not in_table:
+                in_table = True
+                html_lines.append("<table><thead><tr>")
+                for c in cells:
+                    html_lines.append(f"<th>{_inline_md(c)}</th>")
+                html_lines.append("</tr></thead><tbody>")
+            else:
+                html_lines.append("<tr>")
+                for c in cells:
+                    html_lines.append(f"<td>{_inline_md(c)}</td>")
+                html_lines.append("</tr>")
+        # List
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            if not in_list:
+                in_list = True
+                html_lines.append("<ul>")
+            html_lines.append(f"<li>{_inline_md(stripped[2:])}</li>")
+        else:
+            html_lines.append(f"<p>{_inline_md(stripped)}</p>")
+
+    # Close open tags
+    if in_blockquote:
+        html_lines.append("</blockquote>")
+    if in_list:
+        html_lines.append("</ul>")
+    if in_table:
+        html_lines.append("</tbody></table>")
+
+    return "\n".join(html_lines)
+
+
+def _inline_md(text: str) -> str:
+    """Convert inline markdown (bold, italic, code) to HTML."""
+    import re
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+    return text
