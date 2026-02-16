@@ -746,30 +746,26 @@ def create_gradio_interface():
             background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe;
         }
 
-        /* ========== Sidebar Tabs ========== */
-        .sidebar-tabs > .tab-nav {
-            display: flex; flex-direction: column !important;
-            min-width: 200px; gap: 2px; padding: 8px;
+        /* ========== Top Navigation Tabs ========== */
+        .nav-tabs > .tab-nav {
+            display: flex; gap: 4px; padding: 6px;
             background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;
+            justify-content: center; flex-wrap: wrap;
         }
-        .sidebar-tabs > .tab-nav button {
-            text-align: left !important; padding: 10px 16px !important;
-            border-radius: 8px !important; font-weight: 500 !important;
-            font-size: 0.92em !important; border: none !important;
-            transition: all 0.15s ease !important;
+        .nav-tabs > .tab-nav button {
+            padding: 8px 20px !important; border-radius: 8px !important;
+            font-weight: 500 !important; font-size: 0.9em !important;
+            border: none !important; transition: all 0.15s ease !important;
         }
-        .sidebar-tabs > .tab-nav button:hover { background: #eef2ff !important; }
-        .sidebar-tabs > .tab-nav button.selected {
+        .nav-tabs > .tab-nav button:hover { background: #eef2ff !important; }
+        .nav-tabs > .tab-nav button.selected {
             background: #4f46e5 !important; color: white !important;
             box-shadow: 0 2px 8px rgba(79,70,229,0.25) !important;
         }
-        .sidebar-tabs { display: flex !important; flex-direction: row !important; gap: 20px; }
-        .sidebar-tabs > .tabitem { flex: 1; min-width: 0; }
 
         @media (max-width: 768px) {
-            .sidebar-tabs { flex-direction: column !important; }
-            .sidebar-tabs > .tab-nav { flex-direction: row !important; min-width: unset; overflow-x: auto; }
-            .sidebar-tabs > .tab-nav button { white-space: nowrap; }
+            .nav-tabs > .tab-nav { overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start; }
+            .nav-tabs > .tab-nav button { white-space: nowrap; font-size: 0.82em !important; padding: 6px 14px !important; }
             .metrics-row { gap: 6px; }
             .metric { padding: 6px 10px; min-width: 70px; }
             .metric-val { font-size: 1.1em; }
@@ -895,8 +891,7 @@ def create_gradio_interface():
             </div>
             """)
 
-            # ---- Sidebar Navigation Tabs ----
-            with gr.Tabs(elem_classes="sidebar-tabs"):
+            with gr.Tabs(elem_classes="nav-tabs"):
                 # ============================================================
                 # TAB: Project Overview
                 # ============================================================
