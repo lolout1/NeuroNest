@@ -712,533 +712,362 @@ def create_gradio_interface():
             traceback.print_exc()
             return [None] * 7 + [f"**Error**: {str(e)}\n\nOther methods may still work — try running them individually."]
 
-    title = "🧠 NeuroNest: Production ML System for Alzheimer's Care Environment Analysis"
-    description = """
-    <div style="line-height: 1.8; font-size: 15px;">
+    title = "NeuroNest"
 
-    ## 🎯 System Overview
-    **Production computer vision pipeline achieving 98% precision** in detecting visual hazards for Alzheimer's patients using fine-tuned Vision Transformers and MASK R-CNN on custom dataset (15,000+ samples).
-
-    **Problem**: Alzheimer's patients misperceive dark floor areas as voids and cannot distinguish low-contrast objects, causing falls and mobility issues.
-
-    **Solution**: Multi-model ensemble with semantic segmentation → floor isolation → defect detection → contrast analysis pipeline.
-
-    ---
-
-    ## 🏗️ Technical Architecture
-
-    **ML Stack**
-    - **Models**: EoMT-DINOv3 (Vision Transformer backbone) + MASK R-CNN with transfer learning
-    - **Training**: Distributed GPU cluster (Nvidia A100), custom dataset creation with active learning
-    - **Optimization**: Dynamic INT8 quantization, vectorized post-processing, concurrent pipeline execution
-    - **Inference**: FastAPI REST API with async batch processing, Docker containerization
-
-    **System Design**
-    - **Backend**: Python FastAPI + PyTorch 2.5 + HuggingFace Transformers
-    - **Deployment**: Docker on HuggingFace Spaces with CI/CD pipeline
-    - **Frontend**: Gradio 5.x with responsive design, real-time progress tracking
-    - **Standards**: WCAG 2.1 Level AA accessibility compliance (4.5:1 contrast minimum)
-
-    **Key Achievements**
-    - 98% precision on blackspot detection (custom MASK R-CNN)
-    - Dynamic INT8 quantization: ~2-3x CPU inference speedup via `torch.quantization`
-    - Vectorized boundary detection: 50-200x faster contrast analysis (numpy C-level ops)
-    - Concurrent pipeline: blackspot + contrast analysis run in parallel
-    - 80% reduction in manual labeling via automated CV pipeline (Detectron2 + Vision LLMs)
-
-    ---
-
-    ## 📋 Quick Start Guide
-
-    ### **Step 1**: Upload Image
-    - Click **"📸 Upload Room Image"** or select a **sample image** below
-    - Best: Well-lit room photos showing floors and furniture
-
-    ### **Step 2**: Configure (Optional)
-    - **Blackspot Sensitivity**: Detection threshold (default: 0.5)
-    - **Contrast Threshold**: WCAG ratio (default: 4.5:1)
-    - Toggle analysis modules on/off
-
-    ### **Step 3**: Analyze
-    - Click **"🔍 Analyze Environment"**
-    - Processing: ~1-2 min with INT8 quantization enabled (CPU inference)
-
-    ### **Step 4**: Review Results
-    Scroll down for:
-    1. **Semantic Segmentation**: All room elements identified
-    2. **Blackspot Detection**: Dangerous floor areas highlighted
-    3. **Contrast Analysis**: Low-visibility object pairs
-    4. **Full Report**: Statistics + recommendations
-
-    ---
-
-    ## ⚡ INT8 Quantization (CPU Optimization)
-
-    This deployment uses **dynamic INT8 quantization** (`torch.quantization.quantize_dynamic`) to accelerate CPU inference:
-
-    - **What it does**: Converts nn.Linear layer weights from FP32 (32-bit) to INT8 (8-bit), reducing memory by ~4x and using optimized INT8 matrix multiplication kernels
-    - **Speed improvement**: ~1.5-3x faster inference for the DINOv3 Vision Transformer backbone
-    - **Accuracy trade-off**: <0.5% potential change at segment boundaries. The argmax over 150 semantic classes may occasionally differ at edges between regions. This has negligible impact on contrast analysis and blackspot detection, which operate on region-level statistics rather than pixel-precise boundaries
-    - **Toggle**: Set environment variable `NEURONEST_QUANTIZE=0` to disable and use full FP32 precision
-
-    ---
-
-    ## 👥 Team
-    **Texas State University** (C.A.D.S Research Initiative)
-
-    **Backend/ML**: Abheek Pradhan (ML Engineer)
-    **Frontend/Mobile**: Samuel Chutter • Priyanka Karki
-    **Faculty**: Dr. Nadim Adi (Interior Design) • Dr. Greg Lakomski (CS)
-
-    **Tech**: PyTorch • Detectron2 • FastAPI • Docker • ONNX • React Native • HuggingFace • Gradio
-    **Deployment**: [Huggingface](https://huggingface.co/spaces/lolout1/txstNeuroNest) • [Github](https://github.com/lolout1)
-
-    </div>
-    """
-    
     with gr.Blocks(css="""
-        /* Live Demo Button - Prominent CTA */
-        .demo-button-container {
-            text-align: center;
-            margin: clamp(15px, 3vw, 25px) auto;
-            padding: clamp(10px, 2vw, 20px);
+        /* ========== Global ========== */
+        .container { max-width: 1400px; margin: auto; padding: 0 16px; }
+
+        /* ========== Header ========== */
+        .hero {
+            text-align: center; padding: 28px 16px 12px;
+            background: linear-gradient(135deg, #eef2ff 0%, #faf5ff 50%, #ecfdf5 100%);
+            border-radius: 16px; margin-bottom: 20px;
+            border: 1px solid #e0e7ff;
+        }
+        .hero h1 { font-size: 2.2em; margin: 0 0 4px; font-weight: 800; color: #1e1b4b; letter-spacing: -0.5px; }
+        .hero-sub { color: #4b5563; font-size: 1em; margin: 0 0 14px; line-height: 1.6; max-width: 800px; display: inline-block; }
+        .metrics-row {
+            display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;
+            margin: 12px 0 8px;
+        }
+        .metric {
+            display: inline-flex; flex-direction: column; align-items: center;
+            padding: 10px 18px; border-radius: 12px; min-width: 100px;
+            background: white; border: 1px solid #e5e7eb;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .metric-val { font-size: 1.35em; font-weight: 800; color: #4f46e5; line-height: 1.2; }
+        .metric-label { font-size: 0.7em; color: #6b7280; font-weight: 500; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .badge-row { text-align: center; margin: 8px 0 4px; }
+        .badge {
+            display: inline-block; padding: 3px 10px; margin: 2px 3px;
+            border-radius: 16px; font-size: 0.72em; font-weight: 600;
+            background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe;
         }
 
-        .demo-cta-button {
-            display: inline-block;
-            padding: clamp(15px, 3vw, 22px) clamp(40px, 8vw, 60px) !important;
-            font-size: clamp(1.1em, 2.5vw, 1.5em) !important;
-            font-weight: 700 !important;
-            color: white !important;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-            border: none !important;
-            border-radius: clamp(8px, 1.5vw, 12px) !important;
-            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5) !important;
-            cursor: pointer !important;
-            transition: all 0.4s ease !important;
-            text-decoration: none !important;
-            width: auto !important;
-            min-width: clamp(200px, 40vw, 320px);
-            animation: pulse-glow 2s ease-in-out infinite;
+        /* ========== Sidebar Tabs ========== */
+        .sidebar-tabs > .tab-nav {
+            display: flex; flex-direction: column !important;
+            min-width: 200px; gap: 2px; padding: 8px;
+            background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;
         }
-
-        .demo-cta-button:hover {
-            transform: translateY(-3px) scale(1.02);
-            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.7) !important;
-            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%) !important;
+        .sidebar-tabs > .tab-nav button {
+            text-align: left !important; padding: 10px 16px !important;
+            border-radius: 8px !important; font-weight: 500 !important;
+            font-size: 0.92em !important; border: none !important;
+            transition: all 0.15s ease !important;
         }
-
-        @keyframes pulse-glow {
-            0%, 100% { box-shadow: 0 8px 25px rgba(102, 126, 234, 0.5); }
-            50% { box-shadow: 0 8px 35px rgba(102, 126, 234, 0.8); }
+        .sidebar-tabs > .tab-nav button:hover { background: #eef2ff !important; }
+        .sidebar-tabs > .tab-nav button.selected {
+            background: #4f46e5 !important; color: white !important;
+            box-shadow: 0 2px 8px rgba(79,70,229,0.25) !important;
         }
+        .sidebar-tabs { display: flex !important; flex-direction: row !important; gap: 20px; }
+        .sidebar-tabs > .tabitem { flex: 1; min-width: 0; }
 
-        .demo-label {
-            display: inline-block;
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            padding: clamp(6px, 1.5vw, 10px) clamp(15px, 3vw, 25px);
-            border-radius: clamp(20px, 4vw, 30px);
-            font-size: clamp(0.75em, 1.5vw, 0.9em);
-            font-weight: 600;
-            margin-bottom: clamp(8px, 2vw, 12px);
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-
-        /* Base Container - Responsive padding */
-        /* Base Container - Responsive padding */
-        .container {
-            max-width: 100%;
-            margin: auto;
-            padding: clamp(12px, 3vw, 24px);
-            box-sizing: border-box;
-        }
-
-        /* Typography - Responsive and readable */
-        body, .markdown {
-            font-size: clamp(14px, 1.5vw, 16px);
-            line-height: 1.7;
-            color: #2c3e50;
-        }
-
-        h1, h2, h3 {
-            margin-top: clamp(20px, 4vw, 40px);
-            margin-bottom: clamp(12px, 2vw, 20px);
-            color: #1a1a1a;
-            font-weight: 600;
-        }
-
-        h2 { font-size: clamp(1.3em, 2.5vw, 1.8em); }
-        h3 { font-size: clamp(1.1em, 2vw, 1.4em); }
-
-        /* Image outputs - Responsive with max constraints */
-        .image-output {
-            margin: clamp(15px, 3vw, 25px) 0;
-            width: 100%;
-        }
-
-        .image-output img {
-            width: 100%;
-            height: auto;
-            max-width: min(1920px, 100%);
-            margin: 0 auto;
-            display: block;
-            border: 2px solid #e1e4e8;
-            border-radius: clamp(6px, 1vw, 10px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-
-        /* Controls - Responsive layout */
-        .controls-row {
-            margin-bottom: clamp(20px, 4vw, 35px);
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            padding: clamp(15px, 3vw, 25px);
-            border-radius: clamp(8px, 1.5vw, 12px);
-            border: 1px solid #dee2e6;
-        }
-
-        /* Main analyze button - Touch friendly */
-        .main-button {
-            height: clamp(60px, 10vw, 85px) !important;
-            font-size: clamp(1.1em, 2vw, 1.4em) !important;
-            font-weight: 600 !important;
-            width: 100% !important;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-            border: none !important;
-            border-radius: clamp(8px, 1.5vw, 12px) !important;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4) !important;
-            transition: all 0.3s ease !important;
-            cursor: pointer !important;
-        }
-
-        .main-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6) !important;
-        }
-
-        /* Report box - Readable and responsive */
-        .report-box {
-            max-width: min(1200px, 100%);
-            margin: clamp(20px, 4vw, 35px) auto;
-            padding: clamp(20px, 4vw, 35px);
-            background: #ffffff;
-            border-radius: clamp(8px, 1.5vw, 12px);
-            border: 2px solid #e1e4e8;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-            line-height: 1.8;
-        }
-
-        /* Sample images section */
-        .sample-section {
-            margin-bottom: clamp(20px, 4vw, 35px);
-            padding: clamp(15px, 3vw, 25px);
-            background: linear-gradient(135deg, #fafbfc 0%, #f6f8fa 100%);
-            border-radius: clamp(10px, 2vw, 14px);
-            border: 2px solid #e1e4e8;
-        }
-
-        /* Example images - Responsive grid */
-        .examples-holder .examples-table {
-            display: flex !important;
-            justify-content: center !important;
-            gap: clamp(10px, 2vw, 20px) !important;
-            margin-top: 15px !important;
-            flex-wrap: wrap !important;
-        }
-
-        .examples-holder img {
-            border-radius: clamp(6px, 1vw, 10px);
-            cursor: pointer;
-            transition: all 0.3s ease;
-            border: 3px solid transparent;
-            max-width: 100%;
-            height: auto;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-
-        .examples-holder img:hover {
-            transform: scale(1.03);
-            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
-            border: 3px solid #667eea;
-        }
-
-        /* Mobile optimizations */
         @media (max-width: 768px) {
-            .container { padding: 12px; }
-
-            .controls-row {
-                padding: 15px;
-                margin-bottom: 20px;
-            }
-
-            .main-button {
-                height: 70px !important;
-                font-size: 1.2em !important;
-            }
-
-            .report-box {
-                padding: 20px;
-                margin: 20px 10px;
-            }
-
-            .examples-holder .examples-table {
-                gap: 10px !important;
-            }
-
-            h2 { font-size: 1.4em; }
-            h3 { font-size: 1.2em; }
+            .sidebar-tabs { flex-direction: column !important; }
+            .sidebar-tabs > .tab-nav { flex-direction: row !important; min-width: unset; overflow-x: auto; }
+            .sidebar-tabs > .tab-nav button { white-space: nowrap; }
+            .metrics-row { gap: 6px; }
+            .metric { padding: 6px 10px; min-width: 70px; }
+            .metric-val { font-size: 1.1em; }
         }
 
-        /* Tablet optimizations */
-        @media (min-width: 769px) and (max-width: 1024px) {
-            .container { padding: 20px; }
-            .main-button { height: 75px !important; }
+        /* ========== Buttons ========== */
+        .main-button {
+            height: 52px !important; font-size: 1.05em !important; font-weight: 600 !important;
+            width: 100% !important; border-radius: 10px !important;
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+            border: none !important; color: white !important;
+            box-shadow: 0 2px 8px rgba(79,70,229,0.3) !important;
+            transition: all 0.2s ease !important;
+        }
+        .main-button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(79,70,229,0.4) !important; }
+
+        /* ========== Sections ========== */
+        .sample-section {
+            padding: 16px; margin-bottom: 16px;
+            background: #fafbfc; border-radius: 12px; border: 1px solid #e5e7eb;
+        }
+        .controls-row {
+            padding: 16px; margin-bottom: 16px;
+            background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;
+        }
+        .report-box {
+            max-width: 100%; margin: 16px 0; padding: 20px;
+            background: #fff; border-radius: 12px; border: 1px solid #e5e7eb;
+            line-height: 1.7;
+        }
+        .info-card {
+            padding: 20px; background: #fafbfc; border-radius: 12px;
+            border: 1px solid #e5e7eb; line-height: 1.7; margin: 8px 0;
         }
 
-        /* Large screen optimizations */
-        @media (min-width: 1920px) {
-            .container { max-width: 1920px; }
-            body, .markdown { font-size: 17px; }
+        /* ========== Image outputs ========== */
+        .image-output { margin: 8px 0; }
+        .image-output img {
+            width: 100%; max-width: 100%; border-radius: 10px;
+            border: 1px solid #e5e7eb; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
         }
 
-        /* High contrast mode for accessibility */
-        @media (prefers-contrast: high) {
-            .controls-row { border: 2px solid #000; }
-            .sample-section { border: 2px solid #000; }
-            .image-output img { border: 3px solid #000; }
-        }
-
-        /* Reduced motion for accessibility */
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after {
-                animation-duration: 0.01ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: 0.01ms !important;
-            }
-        }
-
-        /* Dark mode support */
-        @media (prefers-color-scheme: dark) {
-            body, .markdown { color: #e1e4e8; }
-            .controls-row { background: linear-gradient(135deg, #2d333b 0%, #22272e 100%); }
-            .sample-section { background: linear-gradient(135deg, #22272e 0%, #1c2128 100%); }
-            .report-box { background: #1c2128; border-color: #373e47; }
-        }
-
-        /* XAI Tab Styles */
+        /* ========== XAI ========== */
         .xai-controls {
-            padding: clamp(15px, 3vw, 25px);
-            background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%);
-            border-radius: clamp(8px, 1.5vw, 12px);
-            border: 1px solid #c5d0e6;
-            margin-bottom: clamp(15px, 3vw, 25px);
+            padding: 16px; background: #f9fafb;
+            border-radius: 12px; border: 1px solid #e5e7eb; margin-bottom: 16px;
         }
-
-        .xai-panel {
-            min-height: 200px;
-        }
+        .xai-panel { min-height: 180px; }
         .xai-panel img {
-            border-radius: 8px;
-            border: 2px solid #e1e4e8;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border-radius: 10px; border: 1px solid #e5e7eb;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: transform 0.15s ease;
         }
-        .xai-panel img:hover {
-            transform: scale(1.02);
-            box-shadow: 0 6px 20px rgba(0,0,0,0.2);
-        }
-
+        .xai-panel img:hover { transform: scale(1.015); box-shadow: 0 4px 16px rgba(0,0,0,0.14); }
         .xai-report {
-            max-width: min(1200px, 100%);
-            margin: clamp(15px, 3vw, 25px) auto;
-            padding: clamp(15px, 3vw, 25px);
-            background: #f8f9ff;
-            border-radius: clamp(8px, 1.5vw, 12px);
-            border: 2px solid #c5d0e6;
-            line-height: 1.8;
+            max-width: 100%; margin: 16px 0; padding: 20px;
+            background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb; line-height: 1.7;
         }
-        .xai-report table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        .xai-report table th, .xai-report table td { padding: 6px 10px; border: 1px solid #ddd; text-align: left; }
-        .xai-report table th { background: #e8eeff; }
+        .xai-report table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+        .xai-report table th, .xai-report table td { padding: 6px 10px; border: 1px solid #e5e7eb; text-align: left; }
+        .xai-report table th { background: #f3f4f6; font-weight: 600; }
 
+        /* ========== Examples ========== */
+        .examples-holder img {
+            border-radius: 8px; cursor: pointer; transition: all 0.2s;
+            border: 2px solid transparent; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+        }
+        .examples-holder img:hover { border-color: #4f46e5; box-shadow: 0 4px 12px rgba(79,70,229,0.2); }
+
+        /* ========== Dark mode ========== */
         @media (prefers-color-scheme: dark) {
-            .xai-controls { background: linear-gradient(135deg, #1a1f2e 0%, #141928 100%); border-color: #2d3555; }
-            .xai-report { background: #1a1f2e; border-color: #2d3555; }
-            .xai-report table th { background: #2d3555; }
-            .xai-panel img { border-color: #2d3555; }
+            .hero { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #064e3b 100%); border-color: #4338ca; }
+            .hero h1 { color: #e0e7ff; }
+            .hero-sub { color: #c7d2fe; }
+            .metric { background: #1f2937; border-color: #374151; }
+            .metric-val { color: #a5b4fc; }
+            .metric-label { color: #9ca3af; }
+            .badge { background: #312e81; color: #c7d2fe; border-color: #4338ca; }
+            .sidebar-tabs > .tab-nav { background: #1f2937; border-color: #374151; }
+            .sidebar-tabs > .tab-nav button:hover { background: #312e81 !important; }
+            .sample-section, .controls-row, .xai-controls, .info-card { background: #1f2937; border-color: #374151; }
+            .report-box, .xai-report { background: #1f2937; border-color: #374151; }
+            .xai-report table th { background: #374151; }
         }
-    """, theme=gr.themes.Base()) as interface:
-        with gr.Column(elem_classes="container"):
-            gr.Markdown(f"# {title}")
 
-            # Prominent Live Demo CTA Button
+        /* ========== Accessibility ========== */
+        @media (prefers-contrast: high) {
+            .sample-section, .controls-row, .xai-controls, .info-card { border: 2px solid currentColor; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+    """, theme=gr.themes.Soft(
+        primary_hue="indigo",
+        secondary_hue="blue",
+        neutral_hue="slate",
+    )) as interface:
+        with gr.Column(elem_classes="container"):
+            # ---- Hero Header ----
             gr.HTML("""
-                <div class="demo-button-container">
-                    <div class="demo-label">🚀 Try It Now</div>
-                    <a href="#demo-section"
-                       class="demo-cta-button"
-                       onclick="setTimeout(function(){var el=document.getElementById('demo-section');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});}},100);return false;"
-                       ontouchend="setTimeout(function(){var el=document.getElementById('demo-section');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});}},100);return false;"
-                       style="text-decoration: none !important; display: inline-block;">
-                        ▶️ Launch Live Demo
-                    </a>
+            <div class="hero">
+                <h1>NeuroNest</h1>
+                <p class="hero-sub">
+                    Production ML system for Alzheimer's care environment analysis.
+                    Multi-model ensemble combining semantic segmentation, blackspot detection,
+                    WCAG contrast analysis, and 7 Explainable AI visualization methods.
+                </p>
+                <div class="metrics-row">
+                    <div class="metric"><span class="metric-val">98%</span><span class="metric-label">Detection Precision</span></div>
+                    <div class="metric"><span class="metric-val">150</span><span class="metric-label">ADE20K Classes</span></div>
+                    <div class="metric"><span class="metric-val">7</span><span class="metric-label">XAI Methods</span></div>
+                    <div class="metric"><span class="metric-val">2-3x</span><span class="metric-label">INT8 Speedup</span></div>
+                    <div class="metric"><span class="metric-val">WCAG</span><span class="metric-label">2.1 Level AA</span></div>
                 </div>
+                <div class="badge-row">
+                    <span class="badge">EoMT-DINOv3 ViT-Large</span>
+                    <span class="badge">Mask R-CNN R50-FPN</span>
+                    <span class="badge">PyTorch 2.5</span>
+                    <span class="badge">HuggingFace Transformers</span>
+                    <span class="badge">Detectron2</span>
+                    <span class="badge">Gradio 5.x</span>
+                </div>
+            </div>
             """)
 
-            gr.Markdown(description)
-            if not blackspot_ok:
-                gr.Markdown("""
-                ⚠️ **Note:** Blackspot detection model not available.
-                To enable blackspot detection, upload the model to HuggingFace or ensure it's in the local directory.
-                """)
+            # ---- Sidebar Navigation Tabs ----
+            with gr.Tabs(elem_classes="sidebar-tabs"):
+                # ============================================================
+                # TAB: Project Overview
+                # ============================================================
+                with gr.TabItem("Project Overview"):
+                    gr.Markdown("""## Problem & Motivation
 
-            with gr.Tabs():
+Alzheimer's patients experience **visual-perceptual deficits** that make dark floor areas appear as voids
+and low-contrast objects invisible. This leads to falls, reduced mobility, and decreased independence.
+
+## Solution Architecture
+
+Multi-model ensemble pipeline that analyzes room environments for visual hazards:
+
+| Stage | Model | Output |
+|-------|-------|--------|
+| 1. Semantic Segmentation | EoMT-DINOv3-Large (ViT backbone, 512x512, 24 layers) | 150-class pixel-level scene parsing |
+| 2. Floor Isolation | Region filtering (80% overlap threshold) | Floor-only surface mask |
+| 3. Blackspot Detection | Mask R-CNN R50-FPN (custom trained on 15,000+ samples) | Instance-level dark area detection |
+| 4. Contrast Analysis | Vectorized boundary detection + WCAG 2.1 | Adjacent object-pair contrast ratios |
+| 5. Explainable AI | 7 methods: attention, gradient, output-based | Model interpretability visualizations |
+
+## Key Technical Achievements
+
+- **98% precision** on blackspot detection via fine-tuned Mask R-CNN with active learning
+- **Dynamic INT8 quantization**: ~2-3x CPU inference speedup via `torch.quantization.quantize_dynamic`
+- **Vectorized analysis**: 50-200x faster contrast computation using numpy C-level operations
+- **Concurrent pipeline**: Blackspot + contrast analysis execute in parallel (ThreadPoolExecutor)
+- **7 XAI methods**: Self-attention, rollout, GradCAM, entropy, PCA, saliency, Chefer relevancy
+- **CPU-optimized**: Runs on HuggingFace Spaces free tier (2 vCPU, 16 GB RAM)
+- **Hook-based attention capture**: Forward hooks bypass SDPA limitations for XAI
+
+## Optimization Pipeline
+```
+Image -> Resize (512x512) -> EoMT-DINOv3 (INT8) -> Semantic Mask
+                                                   -> Floor Prior
+Semantic Mask + Floor Prior -> Mask R-CNN -> Blackspot Instances
+Semantic Mask -> Boundary Detection -> WCAG Contrast Ratios
+EoMT Features -> 7 XAI Methods -> Interpretability Visualizations
+```
+""")
+
                 # ============================================================
-                # TAB 1: Main Analysis
+                # TAB: Team & Research
                 # ============================================================
-                with gr.TabItem("Analysis"):
-                    # First create a hidden image input that will be used by Examples
+                with gr.TabItem("Research & Team"):
+                    gr.Markdown("""## Research Context
+
+**Texas State University** — C.A.D.S (Computer-Aided Design for Safety) Research Initiative
+
+This project addresses a critical gap in assistive technology for cognitive health.
+Environments designed with proper visual contrast and hazard-free flooring can significantly
+improve quality of life and reduce fall risk for individuals with Alzheimer's disease.
+
+## Team
+
+| Role | Name | Contribution |
+|------|------|-------------|
+| **ML Engineer** | Abheek Pradhan | Model architecture, training pipeline, INT8 optimization, XAI system, deployment |
+| **Frontend Developer** | Samuel Chutter | Mobile app (React Native), UI/UX design |
+| **Frontend Developer** | Priyanka Karki | Web interface, data visualization |
+| **Faculty Advisor** | Dr. Nadim Adi | Interior design expertise, clinical requirements |
+| **Faculty Advisor** | Dr. Greg Lakomski | Computer science guidance, research methodology |
+
+## Technology Stack
+
+| Category | Technologies |
+|----------|-------------|
+| **ML Frameworks** | PyTorch 2.5, Detectron2, HuggingFace Transformers |
+| **Models** | EoMT-DINOv3-Large, Mask R-CNN R50-FPN |
+| **XAI Libraries** | grad-cam, captum (custom hook-based implementation) |
+| **Image Processing** | OpenCV, Pillow, scikit-image, scipy |
+| **Deployment** | Docker, HuggingFace Spaces, Gradio 5.x |
+| **Standards** | WCAG 2.1 Level AA, ADE20K (150 classes) |
+
+## Links
+
+- [GitHub Repository](https://github.com/lolout1/NeuroNest)
+- [HuggingFace Space](https://huggingface.co/spaces/lolout1/txstNeuroNest)
+""")
+
+                # ============================================================
+                # TAB: Environment Analysis (Main Demo)
+                # ============================================================
+                with gr.TabItem("Live Demo"):
+                    gr.Markdown("Upload a room image to detect visual hazards for Alzheimer's patients.")
+
                     with gr.Row(visible=False):
-                        image_input = gr.Image(
-                            label="📸 Upload Room Image",
-                            type="filepath",
-                            height=500
-                        )
+                        image_input = gr.Image(label="Upload", type="filepath")
 
-                    # Sample images section at the top with the actual clickable examples
-                    with gr.Column(elem_classes="sample-section"):
-                        gr.Markdown("### 🖼️ Try Sample Images")
-                        gr.Markdown("*Click any image below to load it for analysis or upload your own. || Then scroll down and click analyze environment*")
-                        gr.Markdown("⏱️ **Note:** We use free-tier CPU inferencing, so processing can take up to a few minutes. Please be patient or feel free to [donate](https://github.com/sponsors) to support faster GPU processing! 💙")
-
-                        if sample_images_available:
+                    if sample_images_available:
+                        with gr.Column(elem_classes="sample-section"):
+                            gr.Markdown("**Try a sample image** or upload your own below. Processing takes ~1-2 min on CPU.")
                             gr.Examples(
                                 examples=SAMPLE_IMAGES,
                                 inputs=image_input,
                                 label="",
-                                examples_per_page=3
+                                examples_per_page=3,
                             )
-                        else:
-                            gr.Markdown("*Sample images not found in samples/ directory*")
-
-                    with gr.Row(elem_classes="controls-row"):
-                        with gr.Column(scale=1):
-                            enable_blackspot = gr.Checkbox(
-                                value=blackspot_ok,
-                                label="Enable Floor Blackspot Detection",
-                                interactive=blackspot_ok
-                            )
-                            blackspot_threshold = gr.Slider(
-                                minimum=0.1,
-                                maximum=0.9,
-                                value=0.5,
-                                step=0.05,
-                                label="Blackspot Sensitivity",
-                                visible=blackspot_ok
-                            )
-                        with gr.Column(scale=1):
-                            enable_contrast = gr.Checkbox(
-                                value=True,
-                                label="Enable Universal Contrast Analysis"
-                            )
-                            contrast_threshold = gr.Slider(
-                                minimum=3.0,
-                                maximum=7.0,
-                                value=4.5,
-                                step=0.1,
-                                label="WCAG Contrast Threshold"
-                            )
-
-                    # Demo section anchor for scroll navigation
-                    gr.HTML('<div id="demo-section"></div>')
 
                     with gr.Row():
-                        with gr.Column(scale=2):
-                            # Now show the actual visible image input
+                        with gr.Column(scale=3):
                             image_input_display = gr.Image(
-                                label="📸 Upload Room Image",
+                                label="Upload Room Image",
                                 type="filepath",
-                                height=500
+                                height=400,
                             )
-                            # Connect the hidden input to the visible one
-                            image_input.change(
-                                fn=lambda x: x,
-                                inputs=image_input,
-                                outputs=image_input_display
-                            )
+                            image_input.change(fn=lambda x: x, inputs=image_input, outputs=image_input_display)
                         with gr.Column(scale=1):
                             analyze_button = gr.Button(
-                                "🔍 Analyze Environment",
+                                "Analyze Environment",
                                 variant="primary",
-                                elem_classes="main-button"
+                                elem_classes="main-button",
+                                size="lg",
+                            )
+                            with gr.Accordion("Settings", open=False):
+                                enable_blackspot = gr.Checkbox(
+                                    value=blackspot_ok,
+                                    label="Blackspot Detection",
+                                    interactive=blackspot_ok,
+                                )
+                                blackspot_threshold = gr.Slider(
+                                    minimum=0.1, maximum=0.9, value=0.5, step=0.05,
+                                    label="Blackspot Sensitivity",
+                                    visible=blackspot_ok,
+                                )
+                                enable_contrast = gr.Checkbox(value=True, label="Contrast Analysis")
+                                contrast_threshold = gr.Slider(
+                                    minimum=3.0, maximum=7.0, value=4.5, step=0.1,
+                                    label="WCAG Contrast Threshold",
+                                    info="4.5:1 = WCAG AA, 7:1 = AAA",
+                                )
+
+                    gr.Markdown("### Results")
+                    with gr.Tabs():
+                        with gr.TabItem("Segmentation"):
+                            seg_display = gr.Image(label="150-class ADE20K semantic segmentation", interactive=False, elem_classes="image-output")
+                        with gr.TabItem("Blackspot Detection"):
+                            if blackspot_ok:
+                                blackspot_display = gr.Image(label="Floor blackspot instances with confidence scores", interactive=False, elem_classes="image-output")
+                            else:
+                                blackspot_display = gr.Image(visible=False)
+                                gr.Markdown("Blackspot detection model not available in this deployment.")
+                        with gr.TabItem("Contrast Analysis"):
+                            contrast_display = gr.Image(label="WCAG 2.1 contrast ratio analysis with severity overlay", interactive=False, elem_classes="image-output")
+                        with gr.TabItem("Full Report"):
+                            analysis_report = gr.Markdown(
+                                value="Upload an image and click **Analyze Environment** to begin.",
+                                elem_classes="report-box",
                             )
 
-                    gr.Markdown("---")
-                    gr.Markdown("## 🎯 Segmented Objects")
-                    seg_display = gr.Image(
-                        label=None,
-                        interactive=False,
-                        show_label=False,
-                        elem_classes="image-output"
-                    )
-                    if blackspot_ok:
-                        gr.Markdown("## ⚫ Blackspot Detection")
-                        blackspot_display = gr.Image(
-                            label=None,
-                            interactive=False,
-                            show_label=False,
-                            elem_classes="image-output"
-                        )
-                    else:
-                        blackspot_display = gr.Image(visible=False)
-                    gr.Markdown("## 🎨 Contrast Analysis")
-                    contrast_display = gr.Image(
-                        label=None,
-                        interactive=False,
-                        show_label=False,
-                        elem_classes="image-output"
-                    )
-                    gr.Markdown("---")
-                    analysis_report = gr.Markdown(
-                        value="Upload an image and click 'Analyze Environment' to begin.",
-                        elem_classes="report-box"
-                    )
-
-                    # Use image_input_display for the analysis
                     analyze_button.click(
                         fn=analyze_wrapper,
-                        inputs=[
-                            image_input_display,
-                            blackspot_threshold,
-                            contrast_threshold,
-                            enable_blackspot,
-                            enable_contrast
-                        ],
-                        outputs=[
-                            seg_display,
-                            blackspot_display,
-                            contrast_display,
-                            analysis_report
-                        ]
+                        inputs=[image_input_display, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast],
+                        outputs=[seg_display, blackspot_display, contrast_display, analysis_report],
                     )
 
                 # ============================================================
                 # TAB 2: Explainable AI
                 # ============================================================
-                with gr.TabItem("Explainable AI"):
-                    gr.Markdown("""## Explainable AI (XAI) Visualization Suite
-**7 research-grade methods** to interpret how the DINOv3-EoMT Vision Transformer makes decisions.
-All visualizations include colorbars, annotations, and quantitative metrics for comparison.
+                # ============================================================
+                # TAB: Explainable AI
+                # ============================================================
+                with gr.TabItem("Model Interpretability"):
+                    gr.Markdown("""**7 research-grade XAI methods** to interpret the DINOv3-EoMT Vision Transformer's decisions.
+Each visualization includes colorbars, quantitative metrics, and method citations.
 
-| Category | Methods | What They Reveal |
-|----------|---------|-----------------|
+| Category | Methods | Insight |
+|----------|---------|---------|
 | **Attention** | Self-Attention, Rollout | Where the model focuses spatially |
-| **Gradient** | GradCAM, Saliency, Chefer | Which features drive specific class predictions |
-| **Output** | Entropy, Feature PCA | Model confidence and learned representations |
-
-> **Tip**: Run **Full Suite** to compare all methods side-by-side, or select individual methods for faster results.
-> Gradient methods (GradCAM, Saliency, Chefer) load a separate FP32 model and take longer.
+| **Gradient** | GradCAM, Saliency, Chefer | What drives specific class predictions |
+| **Output** | Entropy, Feature PCA | Confidence levels and learned representations |
 """)
 
                     # Hidden input for sample image Examples
@@ -1361,11 +1190,53 @@ All visualizations include colorbars, annotations, and quantitative metrics for 
                         ],
                     )
 
-            gr.Markdown("""
-                ---
-                **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection, universal contrast analysis, and Explainable AI
-                *Creating safer environments for cognitive health through AI*
-                """)
+                # ============================================================
+                # TAB: Technical Details
+                # ============================================================
+                with gr.TabItem("Technical Details"):
+                    gr.Markdown("""## Model Architecture
+
+### EoMT-DINOv3-Large (Semantic Segmentation)
+| Property | Value |
+|----------|-------|
+| HuggingFace Model | `tue-mps/ade20k_semantic_eomt_large_512` |
+| Backbone | DINOv2 ViT-Large (24 layers, 16 heads, 1024 hidden dim) |
+| Architecture | EoMT (Efficient open-vocabulary Mask Transformer) |
+| Input Resolution | 512 x 512 |
+| Patch Size | 14 x 14 |
+| Classes | 150 (ADE20K) |
+| Encoder | 20 layers (patch tokens + prefix) |
+| Decoder | 4 layers (+ 100 query tokens) |
+| Quantization | Dynamic INT8 on nn.Linear layers |
+
+### Mask R-CNN R50-FPN (Blackspot Detection)
+| Property | Value |
+|----------|-------|
+| Framework | Detectron2 |
+| Backbone | ResNet-50 + Feature Pyramid Network |
+| Classes | 2 (blackspot, background) |
+| Training Data | 15,000+ samples with active learning |
+| Precision | 98% on custom floor blackspot dataset |
+| Floor Filter | 80% mask overlap + 70% pixel threshold |
+
+## XAI Methods Detail
+
+| # | Method | Type | Needs FP32 | Colormap | Reference |
+|---|--------|------|-----------|----------|-----------|
+| 1 | Self-Attention Maps | Attention | No | INFERNO | Vaswani et al. 2017 |
+| 2 | Attention Rollout | Attention | No | INFERNO | Abnar & Zuidema 2020 |
+| 3 | GradCAM | Gradient | Yes | JET | Selvaraju et al. 2017 |
+| 4 | Predictive Entropy | Output | No | MAGMA | Shannon 1948 |
+| 5 | Feature PCA | Hidden State | No | RGB | SVD projection |
+| 6 | Class Saliency | Gradient | Yes | HOT | Simonyan et al. 2014 |
+| 7 | Chefer Relevancy | Attn x Grad | Yes | INFERNO | Chefer et al. 2021 |
+
+## Deployment
+- **Platform**: HuggingFace Spaces (Docker SDK)
+- **Hardware**: CPU free tier (2 vCPU, 16 GB RAM)
+- **Docker Base**: python:3.10-slim (Debian Trixie)
+- **Key Dependencies**: PyTorch 2.5.1, Transformers, Detectron2, Gradio 5.x
+""")
     return interface
 
 if __name__ == "__main__":
