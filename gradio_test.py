@@ -653,10 +653,11 @@ def create_gradio_interface():
             class_id = None if target_class == "Auto (dominant)" else int(target_class.split(":")[0])
 
             if method == "Full Suite":
-                # Check cache first
-                cached = app.xai_analyzer.load_cached(image_path)
+                # Check cache first (by image content, not path)
+                cached = app.xai_analyzer.load_cached_from_file(image_path)
                 if cached:
                     progress(1.0, desc="Loaded from cache")
+                    logger.info(f"[XAI] Cache hit for {image_path}")
                     return render_notebook_html(cached, image_rgb)
 
                 progress(0, desc="Starting XAI Full Suite analysis...")
@@ -665,11 +666,14 @@ def create_gradio_interface():
                     target_class_id=class_id,
                     progress_callback=progress,
                 )
-                # Cache results
+                # Cache results (by file content hash)
                 try:
-                    app.xai_analyzer.save_results(results, image_path)
+                    app.xai_analyzer.save_results(results, image_path=image_path)
+                    logger.info(f"[XAI] Results cached for {image_path}")
                 except Exception as e:
                     logger.warning(f"Cache save failed: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 app.xai_analyzer.cleanup_fp32()
                 return render_notebook_html(results, image_rgb)
@@ -716,13 +720,20 @@ def create_gradio_interface():
             return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>"
 
     def load_sample_gallery():
-        """Load pre-computed XAI analyses for all sample images."""
+        """Load pre-computed XAI analyses for all sample images.
+
+        Uses content-based cache lookup so it works regardless of
+        whether the analysis was run from a Gradio temp path or directly.
+        """
+        from xai_analyzer import XAIAnalyzer as XAI
         html_parts = []
         found = 0
+
         for img_path in SAMPLE_IMAGES:
             if not os.path.exists(img_path):
                 continue
-            cached = app.xai_analyzer.load_cached(img_path) if app.xai_analyzer else None
+            # Content-based lookup — matches regardless of original path
+            cached = XAI.load_cached_from_file(img_path)
             if cached is None:
                 continue
             found += 1
@@ -738,10 +749,15 @@ def create_gradio_interface():
             return (
                 '<div style="text-align:center;padding:40px;color:#6b7280;">'
                 '<p style="font-size:1.2em;">No pre-computed analyses found.</p>'
-                '<p>Run <b>Full Suite</b> analysis on a sample image first — results will be cached here automatically.</p>'
+                '<p>Run <b>Full Suite</b> analysis on a sample image first — '
+                'results are cached by image content and will appear here automatically.</p>'
                 '</div>'
             )
-        return f'<div style="max-width:1200px;margin:auto;"><p style="color:#059669;font-weight:600;">{found} cached analyses available</p>' + "\n".join(html_parts) + '</div>'
+        return (
+            f'<div style="max-width:1200px;margin:auto;">'
+            f'<p style="color:#059669;font-weight:600;">{found} cached analyses available</p>'
+            + "\n".join(html_parts) + '</div>'
+        )
 
     title = "NeuroNest"
 

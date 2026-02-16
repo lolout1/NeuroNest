@@ -278,8 +278,21 @@ class XAIAnalyzer:
             row = row.numpy()
         return row.reshape(gh, gw), gh, gw
 
+    # Floor-related ADE20K class IDs — prefer these as XAI target
+    _FLOOR_IDS = {3, 4, 13, 28, 78}  # floor, tree(?), path, carpet, mat
+
     def _dominant_class(self, seg_mask):
+        """Pick best target class. Prefers floor classes if present (>1% of image),
+        otherwise falls back to the largest class by area."""
         cls, cnt = np.unique(seg_mask, return_counts=True)
+        total = seg_mask.size
+        # Check for floor classes first
+        for fid in self._FLOOR_IDS:
+            if fid in cls:
+                idx = list(cls).index(fid)
+                if cnt[idx] / total > 0.01:  # at least 1% of image
+                    return int(fid)
+        # Fallback: largest class by area
         return int(cls[np.argmax(cnt)])
 
     def _cname(self, cid):
@@ -1176,24 +1189,61 @@ class XAIAnalyzer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cache_key(image_path: str) -> str:
-        """Generate a stable cache key from image path."""
-        import hashlib
-        return hashlib.md5(os.path.basename(image_path).encode()).hexdigest()[:12]
+    def _cache_key_from_file(image_path: str) -> str:
+        """Generate a stable cache key by hashing image FILE CONTENT.
 
-    def save_results(self, results: dict, image_path: str, cache_dir: str = "xai_cache"):
-        """Save XAI results (visualizations as PNG, reports as text) to disk."""
-        key = self._cache_key(image_path)
-        out = os.path.join(cache_dir, key)
+        This ensures the same image always maps to the same cache key,
+        regardless of the file path (Gradio temp paths, sample paths, etc.).
+        """
+        import hashlib
+        h = hashlib.md5()
+        try:
+            with open(image_path, "rb") as f:
+                # Read first 256KB — enough to uniquely identify any image
+                h.update(f.read(256 * 1024))
+        except (OSError, IOError):
+            # Fallback to path-based key
+            h.update(image_path.encode())
+        return h.hexdigest()[:12]
+
+    # Keep np array version for when we only have the image in memory
+    @staticmethod
+    def _cache_key_from_array(image: np.ndarray) -> str:
+        import hashlib
+        h = hashlib.md5()
+        h.update(image.tobytes()[:256 * 1024])
+        return h.hexdigest()[:12]
+
+    _CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xai_cache")
+    _METHOD_KEYS = ["attention", "rollout", "gradcam", "entropy",
+                    "pca", "integrated_gradients", "chefer"]
+
+    def save_results(self, results: dict, image_path: str = None, image: np.ndarray = None):
+        """Save XAI results (visualizations as PNG, reports as text) to disk.
+
+        Uses content-based hashing so the same image always maps to the same cache.
+        """
+        if image_path:
+            key = self._cache_key_from_file(image_path)
+        elif image is not None:
+            key = self._cache_key_from_array(image)
+        else:
+            logger.warning("[XAI] save_results: no image_path or image provided")
+            return None
+
+        out = os.path.join(self._CACHE_DIR, key)
         os.makedirs(out, exist_ok=True)
 
-        for method_key in ["attention", "rollout", "gradcam", "entropy",
-                           "pca", "integrated_gradients", "chefer"]:
+        saved = 0
+        for method_key in self._METHOD_KEYS:
             r = results.get(method_key, {})
             vis = r.get("visualization")
             if vis is not None:
-                path = os.path.join(out, f"{method_key}.png")
-                Image.fromarray(vis).save(path, optimize=True)
+                try:
+                    Image.fromarray(vis).save(os.path.join(out, f"{method_key}.png"), optimize=True)
+                    saved += 1
+                except Exception as e:
+                    logger.warning(f"[XAI] Cache save failed for {method_key}: {e}")
             report = r.get("report", "")
             if report:
                 with open(os.path.join(out, f"{method_key}.txt"), "w") as f:
@@ -1204,41 +1254,66 @@ class XAIAnalyzer:
             with open(os.path.join(out, "full_report.md"), "w") as f:
                 f.write(full_report)
 
-        # Save original image path for reference
-        with open(os.path.join(out, "source.txt"), "w") as f:
-            f.write(image_path)
-
-        logger.info(f"[XAI] Results cached to {out}")
+        logger.info(f"[XAI] Cached {saved} visualizations to {out} (key={key})")
         return out
 
     @staticmethod
-    def load_cached(image_path: str, cache_dir: str = "xai_cache"):
-        """Load cached XAI results. Returns dict or None if not cached."""
-        key = XAIAnalyzer._cache_key(image_path)
-        out = os.path.join(cache_dir, key)
-        if not os.path.isdir(out):
+    def load_cached_from_file(image_path: str):
+        """Load cached XAI results by image file content hash."""
+        key = XAIAnalyzer._cache_key_from_file(image_path)
+        return XAIAnalyzer._load_cache_dir(
+            os.path.join(XAIAnalyzer._CACHE_DIR, key)
+        )
+
+    @staticmethod
+    def load_cached_from_array(image: np.ndarray):
+        """Load cached XAI results by image array content hash."""
+        key = XAIAnalyzer._cache_key_from_array(image)
+        return XAIAnalyzer._load_cache_dir(
+            os.path.join(XAIAnalyzer._CACHE_DIR, key)
+        )
+
+    @staticmethod
+    def _load_cache_dir(cache_path: str):
+        """Load cached results from a specific cache directory."""
+        if not os.path.isdir(cache_path):
             return None
 
         results = {}
-        for method_key in ["attention", "rollout", "gradcam", "entropy",
-                           "pca", "integrated_gradients", "chefer"]:
+        for method_key in XAIAnalyzer._METHOD_KEYS:
             r = {}
-            png = os.path.join(out, f"{method_key}.png")
+            png = os.path.join(cache_path, f"{method_key}.png")
             if os.path.exists(png):
-                r["visualization"] = np.array(Image.open(png).convert("RGB"))
-            txt = os.path.join(out, f"{method_key}.txt")
+                try:
+                    r["visualization"] = np.array(Image.open(png).convert("RGB"))
+                except Exception as e:
+                    logger.warning(f"[XAI] Cache load failed for {method_key}: {e}")
+            txt = os.path.join(cache_path, f"{method_key}.txt")
             if os.path.exists(txt):
                 with open(txt) as f:
                     r["report"] = f.read()
             if r:
                 results[method_key] = r
 
-        rpt = os.path.join(out, "full_report.md")
+        rpt = os.path.join(cache_path, "full_report.md")
         if os.path.exists(rpt):
             with open(rpt) as f:
                 results["report"] = {"report": f.read()}
 
+        if results:
+            logger.info(f"[XAI] Cache hit: {cache_path} ({len(results)-('report' in results)} methods)")
         return results if results else None
+
+    @staticmethod
+    def list_cached():
+        """List all cached analysis directories."""
+        if not os.path.isdir(XAIAnalyzer._CACHE_DIR):
+            return []
+        return [
+            os.path.join(XAIAnalyzer._CACHE_DIR, d)
+            for d in os.listdir(XAIAnalyzer._CACHE_DIR)
+            if os.path.isdir(os.path.join(XAIAnalyzer._CACHE_DIR, d))
+        ]
 
 
 # ---------------------------------------------------------------------------
