@@ -317,7 +317,7 @@ def create_gradio_interface():
             # Tier 2: Workspace tabs (prominent)
             with gr.Tabs(elem_classes="workspace-tabs"):
                 agent_report_in_full = _build_demo_tab(
-                    app, analyze_wrapper, SAMPLE_IMAGES,
+                    app, analyze_wrapper, xai_wrapper, SAMPLE_IMAGES,
                     sample_images_available, blackspot_ok,
                     analysis_state,
                 )
@@ -438,16 +438,22 @@ def _build_team_tab():
 """)
 
 
-def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, blackspot_ok, analysis_state):
+def _build_demo_tab(app, analyze_wrapper, xai_wrapper, sample_images, sample_available, blackspot_ok, analysis_state):
     with gr.TabItem("Live Demo"):
-        gr.Markdown("Upload a room image to detect visual hazards for Alzheimer's patients.")
+        gr.Markdown("""## How It Works
+
+1. **Upload** a room photo (or select a sample below)
+2. **Click Analyze** — the pipeline runs semantic segmentation (150-class EoMT-DINOv3), blackspot detection (Mask R-CNN), WCAG 2.1 contrast analysis, and optionally 7 Explainable AI methods
+3. **Review results** across tabs: segmentation map, blackspot hazards, contrast issues, XAI visualizations, and a full safety report
+
+The system identifies visual hazards that cause falls in Alzheimer's patients — dark floor areas perceived as voids (blackspots) and low-contrast boundaries between surfaces.""")
 
         with gr.Row(visible=False):
             image_input = gr.Image(label="Upload", type="filepath")
 
         if sample_available:
             with gr.Column(elem_classes="sample-section"):
-                gr.Markdown("**Try a sample image** or upload your own below. Processing takes ~1-2 min on CPU.")
+                gr.Markdown("**Try a sample image** or upload your own below.")
                 gr.Examples(examples=sample_images, inputs=image_input, label="", examples_per_page=3)
 
         with gr.Row():
@@ -456,6 +462,7 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
                 image_input.change(fn=lambda x: x, inputs=image_input, outputs=image_input_display)
             with gr.Column(scale=1):
                 analyze_button = gr.Button("Analyze Environment", variant="primary", elem_classes="main-button", size="lg")
+                enable_xai = gr.Checkbox(value=True, label="Include Explainable AI (7 methods, adds ~3-5 min)")
                 with gr.Accordion("Settings", open=False):
                     enable_blackspot = gr.Checkbox(value=blackspot_ok, label="Blackspot Detection", interactive=blackspot_ok)
                     blackspot_threshold = gr.Slider(minimum=0.1, maximum=0.9, value=0.5, step=0.05, label="Blackspot Sensitivity", visible=blackspot_ok)
@@ -474,14 +481,38 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
                     gr.Markdown("Blackspot detection model not available in this deployment.")
             with gr.TabItem("Contrast Analysis"):
                 contrast_display = gr.Image(label="WCAG 2.1 contrast ratio analysis", interactive=False, elem_classes="image-output")
+            with gr.TabItem("Explainable AI"):
+                xai_auto_html = gr.HTML(
+                    value='<div style="text-align:center;padding:40px;color:#6b7280;">'
+                    "<p>XAI results will appear here after analysis completes.</p>"
+                    "<p style='font-size:0.85em;'>Uncheck <b>Include Explainable AI</b> above to skip.</p></div>",
+                    elem_classes="xai-report",
+                )
             with gr.TabItem("Full Report"):
                 analysis_report = gr.Markdown(value="Upload an image and click **Analyze Environment** to begin.", elem_classes="report-box")
                 agent_report_section = gr.HTML(value="", visible=False, elem_classes="report-box")
+
+        def auto_xai_wrapper(image_path, enable_xai_flag, current_state, progress=gr.Progress(track_tqdm=True)):
+            current_state = current_state or {}
+            if not enable_xai_flag or image_path is None or app.xai_analyzer is None:
+                msg = "XAI analysis skipped." if not enable_xai_flag else "No image provided."
+                return (
+                    f'<div style="text-align:center;padding:40px;color:#6b7280;"><p>{msg}</p></div>',
+                    current_state,
+                )
+            return xai_wrapper(
+                image_path, "Full Suite", 19, "Mean (all heads)",
+                "Auto (dominant)", current_state, progress,
+            )
 
         analyze_button.click(
             fn=analyze_wrapper,
             inputs=[image_input_display, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast],
             outputs=[seg_display, blackspot_display, contrast_display, analysis_report, analysis_state],
+        ).then(
+            fn=auto_xai_wrapper,
+            inputs=[image_input_display, enable_xai, analysis_state],
+            outputs=[xai_auto_html, analysis_state],
         )
 
     return agent_report_section
