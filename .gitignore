@@ -19,3 +19,6 @@ research/
 
 # XAI result cache (generated at runtime)
 xai_cache/
+
+# Local project config (never commit)
+CLAUDE.md
