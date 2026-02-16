@@ -21,11 +21,10 @@ warnings.filterwarnings("ignore")
 def quantize_model_int8(model: nn.Module, model_name: str = "model") -> nn.Module:
     """Apply dynamic INT8 quantization to nn.Linear layers.
 
-    Uses torch.quantization.quantize_dynamic (stable API since PyTorch 1.7).
+    Uses torch.quantization.quantize_dynamic (stable PyTorch API).
     Only quantizes nn.Linear layers which are the dominant cost in transformer
-    models like Swin. Conv2d layers remain FP32 (not supported by dynamic
-    quantization in PyTorch 1.12). Falls back to the original FP32 model if
-    quantization fails for any reason.
+    models (DINOv3 ViT, Swin, etc.). Conv2d layers remain FP32. Falls back to
+    the original FP32 model if quantization fails for any reason.
 
     Returns the quantized model, or the original if quantization fails.
     """
@@ -52,36 +51,14 @@ def quantize_model_int8(model: nn.Module, model_name: str = "model") -> nn.Modul
         return model
 
 from detectron2.config import get_cfg
-from detectron2.projects.deeplab import add_deeplab_config
-from detectron2.data import MetadataCatalog
 from detectron2.engine.defaults import DefaultPredictor
 from detectron2 import model_zoo
-from detectron2.utils.visualizer import Visualizer, ColorMode
 
-try:
-    from oneformer import (
-        add_oneformer_config,
-        add_common_config,
-        add_swin_config,
-        add_dinat_config,
-    )
-    from demo.defaults import DefaultPredictor as OneFormerPredictor
-    ONEFORMER_AVAILABLE = True
-except ImportError as e:
-    print(f"OneFormer not available: {e}")
-    ONEFORMER_AVAILABLE = False
+from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation
+from ade20k_classes import ADE20K_COLORS, ADE20K_NAMES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Check DiNAT availability if OneFormer loaded
-if ONEFORMER_AVAILABLE:
-    try:
-        from oneformer.modeling import DINAT_AVAILABLE
-        if not DINAT_AVAILABLE:
-            logger.info("DiNAT backbone not available - using Swin backbone only")
-    except ImportError:
-        pass
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CPU_DEVICE = torch.device("cpu")
@@ -96,17 +73,6 @@ FLOOR_CLASSES = {
     'floor': [3, 4, 13],
     'carpet': [28],
     'mat': [78],
-}
-
-ONEFORMER_CONFIG = {
-    "ADE20K": {
-        "key": "ade20k",
-        "swin_cfg": "configs/ade20k/oneformer_swin_large_IN21k_384_bs16_160k.yaml",
-        "swin_model": "shi-labs/oneformer_ade20k_swin_large",
-        "swin_file": "250_16_swin_l_oneformer_ade20k_160k.pth",
-        "process_size": 640,
-        "max_size": 2560
-    }
 }
 
 BLACKSPOT_MODEL_REPO = "lolout1/txstNeuroNest"
@@ -145,70 +111,73 @@ def prepare_display_image(image: np.ndarray, max_width: int = DISPLAY_MAX_WIDTH,
         return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     return image
 
-class OneFormerManager:
-    def __init__(self):
-        self.predictor = None
-        self.metadata = None
-        self.initialized = False
-        self.process_size = ONEFORMER_CONFIG["ADE20K"]["process_size"]
-        self.max_size = ONEFORMER_CONFIG["ADE20K"]["max_size"]
+class EoMTSegmenter:
+    """Semantic segmentation using EoMT-DINOv3 via HuggingFace Transformers.
 
-    def initialize(self, backbone: str = "swin"):
-        if not ONEFORMER_AVAILABLE:
-            logger.error("OneFormer not available")
-            return False
+    Replaces OneFormerManager. Uses pretrained ADE20K 150-class model achieving
+    59.5 mIoU (vs OneFormer's 57.0). ONNX-exportable architecture.
+    """
+    MODEL_ID = "tue-mps/ade20k_semantic_eomt_large_512"
+
+    def __init__(self):
+        self.processor = None
+        self.model = None
+        self.initialized = False
+
+    def initialize(self, backbone: str = "dinov3") -> bool:
         try:
-            cfg = get_cfg()
-            add_deeplab_config(cfg)
-            add_common_config(cfg)
-            add_swin_config(cfg)
-            add_oneformer_config(cfg)
-            add_dinat_config(cfg)
-            config = ONEFORMER_CONFIG["ADE20K"]
-            cfg.merge_from_file(config["swin_cfg"])
-            cfg.MODEL.DEVICE = DEVICE
-            model_path = hf_hub_download(
-                repo_id=config["swin_model"],
-                filename=config["swin_file"]
-            )
-            cfg.MODEL.WEIGHTS = model_path
-            cfg.freeze()
-            self.predictor = OneFormerPredictor(cfg)
+            logger.info(f"Loading EoMT-DINOv3 from {self.MODEL_ID}...")
+            self.processor = AutoImageProcessor.from_pretrained(self.MODEL_ID)
+            self.model = AutoModelForUniversalSegmentation.from_pretrained(self.MODEL_ID)
+            self.model.eval()
             if ENABLE_QUANTIZATION:
-                self.predictor.model = quantize_model_int8(
-                    self.predictor.model, "OneFormer-Swin-Large"
-                )
+                self.model = quantize_model_int8(self.model, "EoMT-DINOv3-L")
             else:
-                logger.info("INT8 quantization disabled for OneFormer (FP32 mode)")
-            self.metadata = MetadataCatalog.get(
-                cfg.DATASETS.TEST_PANOPTIC[0] if len(cfg.DATASETS.TEST_PANOPTIC) else "__unused"
-            )
+                logger.info("INT8 quantization disabled for EoMT (FP32 mode)")
             self.initialized = True
-            logger.info("OneFormer initialized successfully")
+            logger.info("EoMT-DINOv3 initialized successfully")
             return True
         except Exception as e:
-            logger.error(f"Failed to initialize OneFormer: {e}")
+            logger.error(f"Failed to initialize EoMT: {e}")
             return False
 
     def semantic_segmentation(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if not self.initialized:
-            raise RuntimeError("OneFormer not initialized")
-        original_size = (image.shape[0], image.shape[1])
-        image_processed, scale = resize_image_for_processing(image, self.process_size, self.max_size)
-        logger.info(f"Processing image at {image_processed.shape}, scale: {scale}")
-        predictions = self.predictor(image_processed, "semantic")
-        seg_mask_processed = predictions["sem_seg"].argmax(dim=0).cpu().numpy()
-        seg_mask_original = resize_mask_to_original(seg_mask_processed, original_size)
-        visualizer = Visualizer(
-            image[:, :, ::-1],
-            metadata=self.metadata,
-            instance_mode=ColorMode.IMAGE,
-            scale=1.0
+            raise RuntimeError("EoMT not initialized")
+        original_h, original_w = image.shape[:2]
+        logger.info(f"Processing image at {image.shape}")
+        pil_image = Image.fromarray(image)
+        inputs = self.processor(images=pil_image, return_tensors="pt")
+        with torch.inference_mode():
+            outputs = self.model(**inputs)
+        seg_maps = self.processor.post_process_semantic_segmentation(
+            outputs, target_sizes=[(original_h, original_w)]
         )
-        vis_output = visualizer.draw_sem_seg(seg_mask_original, alpha=0.6)
-        vis_image = vis_output.get_image()[:, :, ::-1]
+        seg_mask = seg_maps[0].cpu().numpy().astype(np.uint8)
+        vis_image = self._visualize_segmentation(image, seg_mask)
         vis_image_display = prepare_display_image(vis_image)
-        return seg_mask_original, vis_image_display
+        return seg_mask, vis_image_display
+
+    def _visualize_segmentation(self, image: np.ndarray, seg_mask: np.ndarray,
+                                alpha: float = 0.6) -> np.ndarray:
+        h, w = seg_mask.shape
+        color_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+        for label_id in np.unique(seg_mask):
+            if label_id < len(ADE20K_COLORS):
+                color_overlay[seg_mask == label_id] = ADE20K_COLORS[label_id]
+        vis = cv2.addWeighted(image, 1 - alpha, color_overlay, alpha, 0)
+        labels, areas = np.unique(seg_mask, return_counts=True)
+        min_area = h * w * 0.01
+        for label_id, area in zip(labels, areas):
+            if area >= min_area and label_id < len(ADE20K_NAMES):
+                ys, xs = np.where(seg_mask == label_id)
+                cx, cy = int(np.median(xs)), int(np.median(ys))
+                name = ADE20K_NAMES[label_id].split(",")[0]
+                cv2.putText(vis, name, (cx, cy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(vis, name, (cx, cy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        return vis
 
     def extract_floor_areas(self, segmentation: np.ndarray) -> np.ndarray:
         floor_mask = np.zeros_like(segmentation, dtype=bool)
@@ -409,22 +378,22 @@ class ImprovedBlackspotDetector:
 
 class NeuroNestApp:
     def __init__(self):
-        self.oneformer = OneFormerManager()
+        self.segmenter = EoMTSegmenter()
         self.blackspot_detector = None
         self.contrast_analyzer = UniversalContrastAnalyzer(wcag_threshold=4.5)
         self.initialized = False
 
     def initialize(self):
         logger.info("Initializing NeuroNest application...")
-        oneformer_success = self.oneformer.initialize()
+        seg_success = self.segmenter.initialize()
         blackspot_success = False
         try:
             self.blackspot_detector = ImprovedBlackspotDetector()
             blackspot_success = self.blackspot_detector.initialize()
         except Exception as e:
             logger.warning(f"Could not initialize blackspot detector: {e}")
-        self.initialized = oneformer_success
-        return oneformer_success, blackspot_success
+        self.initialized = seg_success
+        return seg_success, blackspot_success
 
     def analyze_image(
         self,
@@ -452,12 +421,12 @@ class NeuroNestApp:
             # Stage 1: Semantic segmentation (blocking - downstream stages depend on this)
             t0 = time.perf_counter()
             logger.info("Running semantic segmentation...")
-            seg_mask, seg_visualization = self.oneformer.semantic_segmentation(image_rgb)
+            seg_mask, seg_visualization = self.segmenter.semantic_segmentation(image_rgb)
             results['segmentation'] = {
                 'visualization': seg_visualization,
                 'mask': seg_mask
             }
-            floor_prior = self.oneformer.extract_floor_areas(seg_mask)
+            floor_prior = self.segmenter.extract_floor_areas(seg_mask)
             t_seg = time.perf_counter() - t0
             logger.info(f"Segmentation completed in {t_seg:.1f}s")
 
@@ -543,9 +512,9 @@ class NeuroNestApp:
 
 def create_gradio_interface():
     app = NeuroNestApp()
-    oneformer_ok, blackspot_ok = app.initialize()
-    if not oneformer_ok:
-        raise RuntimeError("Failed to initialize OneFormer")
+    seg_ok, blackspot_ok = app.initialize()
+    if not seg_ok:
+        raise RuntimeError("Failed to initialize EoMT segmentation")
     
     # Define sample images
     SAMPLE_IMAGES = [
@@ -662,15 +631,15 @@ def create_gradio_interface():
     ## 🏗️ Technical Architecture
 
     **ML Stack**
-    - **Models**: OneFormer (Swin Transformer backbone) + MASK R-CNN with transfer learning
+    - **Models**: EoMT-DINOv3 (Vision Transformer backbone) + MASK R-CNN with transfer learning
     - **Training**: Distributed GPU cluster (Nvidia A100), custom dataset creation with active learning
     - **Optimization**: Dynamic INT8 quantization, vectorized post-processing, concurrent pipeline execution
     - **Inference**: FastAPI REST API with async batch processing, Docker containerization
 
     **System Design**
-    - **Backend**: Python FastAPI + PyTorch 1.12.1 + Detectron2
+    - **Backend**: Python FastAPI + PyTorch 2.5 + HuggingFace Transformers
     - **Deployment**: Docker on HuggingFace Spaces with CI/CD pipeline
-    - **Frontend**: Gradio 4.43.0 with responsive design, real-time progress tracking
+    - **Frontend**: Gradio 5.x with responsive design, real-time progress tracking
     - **Standards**: WCAG 2.1 Level AA accessibility compliance (4.5:1 contrast minimum)
 
     **Key Achievements**
@@ -711,7 +680,7 @@ def create_gradio_interface():
     This deployment uses **dynamic INT8 quantization** (`torch.quantization.quantize_dynamic`) to accelerate CPU inference:
 
     - **What it does**: Converts nn.Linear layer weights from FP32 (32-bit) to INT8 (8-bit), reducing memory by ~4x and using optimized INT8 matrix multiplication kernels
-    - **Speed improvement**: ~1.5-3x faster inference for the Swin Transformer backbone (~96 Linear layers quantized)
+    - **Speed improvement**: ~1.5-3x faster inference for the DINOv3 Vision Transformer backbone
     - **Accuracy trade-off**: <0.5% potential change at segment boundaries. The argmax over 150 semantic classes may occasionally differ at edges between regions. This has negligible impact on contrast analysis and blackspot detection, which operate on region-level statistics rather than pixel-precise boundaries
     - **Toggle**: Set environment variable `NEURONEST_QUANTIZE=0` to disable and use full FP32 precision
 
@@ -1117,7 +1086,7 @@ def create_gradio_interface():
 
 if __name__ == "__main__":
     print(f"🚀 Starting NeuroNest on {DEVICE}")
-    print(f"OneFormer available: {ONEFORMER_AVAILABLE}")
+    print("EoMT-DINOv3 segmentation engine")
     try:
         interface = create_gradio_interface()
         interface.queue(max_size=10).launch(

@@ -1,75 +1,36 @@
-# Core dependencies - NumPy pinned to 1.x (CRITICAL for PyTorch)
-numpy==1.23.5
+# Core
+numpy>=1.24.0,<2.0.0
 
-# PyTorch CPU versions - Using 1.12.1 (has torch.amp for OneFormer)
+# PyTorch 2.5 CPU
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==1.12.1+cpu
-torchvision==0.13.1+cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+
+# HuggingFace Transformers (DINOv3-EoMT semantic segmentation)
+transformers>=4.56.0
+
+# detectron2 main branch (MaskRCNN blackspot detection only)
+git+https://github.com/facebookresearch/detectron2.git
 
 # Image processing
-Pillow>=9.0.0,<10.0.0
+Pillow>=10.0.0,<11.0.0
+opencv-python>=4.8.0,<5.0.0
 
-# Detectron2 CPU version - build from source (no wheels for PyTorch 1.12)
-git+https://github.com/facebookresearch/detectron2.git@v0.6
+# Scientific computing
+scipy>=1.11.0,<2.0.0
+scikit-image>=0.22.0,<1.0.0
 
-# OpenCV
-opencv-python>=4.5.0,<5.0.0
+# Web interface
+gradio>=5.0.0,<6.0.0
+huggingface_hub>=0.23.0,<1.0.0
 
-# Image utilities
-imutils>=0.5.4,<1.0.0
-
-# Scientific computing - STRICT scipy version to prevent numpy 2.x
-scipy==1.9.3
-shapely>=2.0.0,<3.0.0
-h5py>=3.7.0,<4.0.0
-scikit-image==0.19.3
-scikit-learn>=1.0.0,<2.0.0
-
-# Deep learning utilities
-timm>=0.9.0,<1.0.0
-einops>=0.7.0,<1.0.0
-
-# Development tools
+# YAML/misc
+PyYAML>=6.0
+matplotlib>=3.8.0,<4.0.0
 tqdm>=4.65.0,<5.0.0
 
-# NLP utilities
-ftfy>=6.1.0
-regex>=2023.0.0
-inflect>=6.0.0
-
-# File utilities
-gdown>=4.6.0
-wget>=3.2
-
-# Web interface - Gradio 4.43.0 (Python 3.9 compatible, stable ASGI)
-gradio==4.43.0
-gradio-client==1.3.0
-huggingface_hub>=0.20.0,<1.0.0
-
-# FastAPI/ASGI stack with upper bounds for compatibility
-fastapi>=0.100.0,<0.113.0
-uvicorn[standard]>=0.23.0,<0.30.0
-pydantic>=2.0.0,<2.11.0
-starlette>=0.27.0,<0.38.0
-
-# YAML support
-PyYAML>=6.0
-
-# Matplotlib
-matplotlib>=3.7.0,<4.0.0
-
-# Build tools
-cython>=0.29.0
-setuptools>=68.0.0
-
-# COCO API
-pycocotools
-
-# Additional dependencies
-httpx>=0.24.0
-anyio>=3.7.0
-
-# Fix urllib3/chardet version mismatch warnings
-urllib3>=1.26.0,<2.0.0
-charset-normalizer>=2.0.0,<4.0.0
-requests>=2.27.0,<3.0.0
+# ASGI stack
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.5.0
+httpx>=0.27.0
