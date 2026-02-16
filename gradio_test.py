@@ -1211,12 +1211,35 @@ def create_gradio_interface():
                         "7 research-grade XAI methods. Understand *what* the model sees and *why*."
                     )
 
+                    # Hidden input for sample image Examples
+                    with gr.Row(visible=False):
+                        xai_hidden_input = gr.Image(
+                            label="XAI Image",
+                            type="filepath",
+                        )
+
+                    if sample_images_available:
+                        with gr.Column(elem_classes="sample-section"):
+                            gr.Markdown("### Sample Images")
+                            gr.Examples(
+                                examples=SAMPLE_IMAGES,
+                                inputs=xai_hidden_input,
+                                label="",
+                                examples_per_page=3,
+                            )
+
                     with gr.Row(elem_classes="xai-controls"):
                         with gr.Column(scale=2):
                             xai_image_input = gr.Image(
                                 label="Upload Image",
                                 type="filepath",
                                 height=350,
+                            )
+                            # Connect hidden input to visible one
+                            xai_hidden_input.change(
+                                fn=lambda x: x,
+                                inputs=xai_hidden_input,
+                                outputs=xai_image_input,
                             )
                         with gr.Column(scale=1):
                             xai_method = gr.Radio(
