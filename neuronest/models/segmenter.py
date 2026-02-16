@@ -12,10 +12,7 @@ from .quantization import quantize_model_int8
 
 logger = logging.getLogger(__name__)
 
-try:
-    from ade20k_classes import ADE20K_COLORS, ADE20K_NAMES
-except ImportError:
-    from neuronest.data.ade20k import ADE20K_COLORS, ADE20K_NAMES
+from ade20k_classes import ADE20K_COLORS, ADE20K_NAMES
 
 
 class EoMTSegmenter:

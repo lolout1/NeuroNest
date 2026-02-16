@@ -70,15 +70,44 @@ def create_gradio_interface():
         report = _comprehensive_report(results, contrast_report, blackspot_report)
         return seg_output, blackspot_output, contrast_output, report, results
 
-    def xai_wrapper(image_path, method, layer, head_choice, target_class, progress=gr.Progress(track_tqdm=True)):
+    def _build_xai_summary(results, method_name="Full Suite"):
+        METHOD_NAMES = {
+            "attention": "Self-Attention Maps", "rollout": "Attention Rollout",
+            "gradcam": "GradCAM Segmentation", "entropy": "Predictive Entropy",
+            "pca": "Feature PCA", "integrated_gradients": "Integrated Gradients",
+            "chefer": "Chefer Relevancy",
+        }
+        lines = [f"[XAI ANALYSIS] Method: {method_name}", f"  Methods completed: {len(results)}"]
+        for key, result in results.items():
+            name = METHOD_NAMES.get(key, key)
+            report = result.get("report", "")
+            lines.append(f"  - {name}: {report}" if report else f"  - {name}: completed")
+        if "entropy" in results:
+            emap = results["entropy"].get("entropy_map")
+            if emap is not None:
+                me = float(emap.mean())
+                hp = float((emap > 0.5).mean() * 100)
+                lines.append(f"  Model confidence: mean entropy={me:.3f}, high-uncertainty pixels={hp:.1f}%")
+                if me < 0.10:
+                    lines.append("  Assessment: Very high confidence — model strongly recognizes all elements")
+                elif me < 0.20:
+                    lines.append("  Assessment: High confidence — clear boundaries with minor ambiguity")
+                elif me < 0.35:
+                    lines.append("  Assessment: Moderate confidence — some boundaries cause uncertainty")
+                else:
+                    lines.append("  Assessment: Low confidence — significant uncertain regions")
+        return "\n".join(lines)
+
+    def xai_wrapper(image_path, method, layer, head_choice, target_class, current_state, progress=gr.Progress(track_tqdm=True)):
+        current_state = current_state or {}
         if image_path is None:
-            return "<p>Upload an image and click <b>Run XAI Analysis</b> to begin.</p>"
+            return "<p>Upload an image and click <b>Run XAI Analysis</b> to begin.</p>", current_state
         if app.xai_analyzer is None:
-            return "<p style='color:red;'>XAI analyzer not initialized.</p>"
+            return "<p style='color:red;'>XAI analyzer not initialized.</p>", current_state
         try:
             image = cv2.imread(image_path, cv2.IMREAD_COLOR)
             if image is None:
-                return "<p style='color:red;'>Could not load image.</p>"
+                return "<p style='color:red;'>Could not load image.</p>", current_state
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             layer_idx = int(layer)
@@ -89,20 +118,22 @@ def create_gradio_interface():
                 cached = app.xai_analyzer.load_cached_from_file(image_path)
                 if cached:
                     progress(1.0, desc="Loaded from cache")
-                    return render_notebook_html(cached, image_rgb)
+                    current_state["xai_report"] = _build_xai_summary(cached, "Full Suite (cached)")
+                    return render_notebook_html(cached, image_rgb), current_state
 
                 progress(0, desc="Starting XAI Full Suite analysis...")
                 results = app.xai_analyzer.run_full_analysis(
                     image_rgb, layer=layer_idx, head=head_idx,
                     target_class_id=class_id, progress_callback=progress,
                 )
+                current_state["xai_report"] = _build_xai_summary(results, "Full Suite")
                 try:
                     app.xai_analyzer.save_results(results, image_path=image_path)
                 except Exception as e:
                     logger.warning(f"Cache save failed: {e}")
 
                 app.xai_analyzer.cleanup_fp32()
-                return render_notebook_html(results, image_rgb)
+                return render_notebook_html(results, image_rgb), current_state
             else:
                 method_map = {
                     "Self-Attention": ("self_attention_maps", {"layer": layer_idx, "head": head_idx}),
@@ -129,30 +160,37 @@ def create_gradio_interface():
                         "Feature PCA": "pca", "Integrated Gradients": "integrated_gradients",
                         "Chefer Relevancy": "chefer",
                     }
-                    return render_notebook_html({key_map[method]: result}, image_rgb)
+                    single_results = {key_map[method]: result}
+                    current_state["xai_report"] = _build_xai_summary(single_results, method)
+                    return render_notebook_html(single_results, image_rgb), current_state
 
-            return "<p>Unknown method selected.</p>"
+            return "<p>Unknown method selected.</p>", current_state
         except Exception as e:
             logger.error(f"XAI analysis error: {e}")
             import traceback
             traceback.print_exc()
-            return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>"
+            return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>", current_state
 
-    def defect_xai_wrapper(image_path, progress=gr.Progress(track_tqdm=True)):
+    def defect_xai_wrapper(image_path, current_state, progress=gr.Progress(track_tqdm=True)):
+        current_state = current_state or {}
         if image_path is None:
-            return "<p>Upload an image and click <b>Run Defect XAI</b> to begin.</p>"
+            return "<p>Upload an image and click <b>Run Defect XAI</b> to begin.</p>", current_state
         if app.xai_analyzer is None:
-            return "<p style='color:red;'>XAI analyzer not initialized.</p>"
+            return "<p style='color:red;'>XAI analyzer not initialized.</p>", current_state
         try:
             image = cv2.imread(image_path, cv2.IMREAD_COLOR)
             if image is None:
-                return "<p style='color:red;'>Could not load image.</p>"
+                return "<p style='color:red;'>Could not load image.</p>", current_state
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             cached = XAIAnalyzer.load_cached_defect_from_file(image_path)
             if cached:
                 progress(1.0, desc="Loaded defect analysis from cache")
-                return render_defect_notebook_html(cached, image_rgb)
+                current_state["xai_report"] = (
+                    "[DEFECT XAI ANALYSIS] Loaded from cache\n"
+                    f"  Methods: {len(cached)} (GradCAM, Entropy, IG, Chefer)"
+                )
+                return render_defect_notebook_html(cached, image_rgb), current_state
 
             progress(0.05, desc="Running segmentation...")
             seg_mask, _ = app.segmenter.semantic_segmentation(image_rgb)
@@ -199,18 +237,32 @@ def create_gradio_interface():
             target_class = app.xai_analyzer._dominant_class(seg_mask)
             floor_name = app.xai_analyzer._cname(target_class)
 
+            defect_summary_lines = [
+                "[DEFECT XAI ANALYSIS]",
+                f"  Floor class targeted: {floor_name}",
+                f"  Blackspot detections: {blackspot_count}",
+                f"  Blackspot coverage: {blackspot_coverage:.2f}%",
+                f"  Contrast failures overlaid: {len(contrast_issues)}",
+                f"  XAI methods applied: {len(results)} (GradCAM, Entropy, Integrated Gradients, Chefer Relevancy)",
+            ]
+            for key, result in results.items():
+                report = result.get("report", "")
+                if report:
+                    defect_summary_lines.append(f"  - {key}: {report}")
+            current_state["xai_report"] = "\n".join(defect_summary_lines)
+
             progress(1.0, desc="Complete")
             return render_defect_notebook_html(
                 results, image_rgb,
                 blackspot_count=blackspot_count,
                 blackspot_coverage=blackspot_coverage,
                 floor_class_name=floor_name,
-            )
+            ), current_state
         except Exception as e:
             logger.error(f"Defect XAI error: {e}")
             import traceback
             traceback.print_exc()
-            return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>"
+            return f"<p style='color:red;'><b>Error</b>: {str(e)}</p>", current_state
 
     def load_sample_gallery():
         html_parts = []
@@ -264,7 +316,7 @@ def create_gradio_interface():
                 )
                 _build_xai_tab(
                     xai_wrapper, defect_xai_wrapper, load_sample_gallery,
-                    SAMPLE_IMAGES, sample_images_available,
+                    SAMPLE_IMAGES, sample_images_available, analysis_state,
                 )
                 _build_chat_tab(analysis_state)
                 _build_technical_tab()
@@ -408,7 +460,7 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
         )
 
 
-def _build_xai_tab(xai_wrapper, defect_xai_wrapper, load_sample_gallery, sample_images, sample_available):
+def _build_xai_tab(xai_wrapper, defect_xai_wrapper, load_sample_gallery, sample_images, sample_available, analysis_state):
     with gr.TabItem("Model Interpretability"):
         gr.Markdown("""**7 XAI visualization methods** for interpreting DINOv3-EoMT Vision Transformer decisions.
 Includes defect-focused analysis with hazard overlays and full model understanding suite.
@@ -450,7 +502,7 @@ Analyses are **cached automatically** — re-running the same image loads instan
                     '<p style="font-size:0.85em;margin-top:16px;">Red = blackspot contours &bull; Amber = contrast failures</p></div>',
                     elem_classes="xai-report",
                 )
-                defect_btn.click(fn=defect_xai_wrapper, inputs=[defect_image], outputs=[defect_nb])
+                defect_btn.click(fn=defect_xai_wrapper, inputs=[defect_image, analysis_state], outputs=[defect_nb, analysis_state])
 
             # Model Understanding sub-tab
             with gr.TabItem("Model Understanding"):
@@ -495,8 +547,8 @@ Analyses are **cached automatically** — re-running the same image loads instan
                 )
                 xai_btn.click(
                     fn=xai_wrapper,
-                    inputs=[xai_image, xai_method, xai_layer, xai_head, xai_class],
-                    outputs=[xai_nb],
+                    inputs=[xai_image, xai_method, xai_layer, xai_head, xai_class, analysis_state],
+                    outputs=[xai_nb, analysis_state],
                 )
 
             # Sample Gallery sub-tab
@@ -514,8 +566,8 @@ Run Full Suite on any sample image — results are cached and displayed here aut
 def _build_chat_tab(analysis_state):
     with gr.TabItem("AI Assistant"):
         gr.Markdown(
-            "Ask questions about the analysis results. "
-            "Run an analysis in the **Live Demo** tab first for context-aware responses."
+            "Ask questions about analysis results, model interpretability findings, or safety recommendations. "
+            "Run analyses in **Live Demo** and/or **Model Interpretability** tabs for context-aware responses."
         )
 
         chatbot = gr.Chatbot(
@@ -554,7 +606,8 @@ def _build_chat_tab(analysis_state):
                 "Is the floor safe for someone with Alzheimer's?",
                 "What should I fix first?",
                 "Explain the blackspot detection results",
-                "How does the contrast analysis work?",
+                "How confident is the model in its predictions?",
+                "What do the XAI visualizations tell us about this room?",
             ],
             inputs=chat_input,
             label="Example questions",

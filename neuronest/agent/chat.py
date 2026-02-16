@@ -31,6 +31,7 @@ class AnalysisContext:
     blackspot: Optional[Dict[str, Any]] = None
     contrast: Optional[Dict[str, Any]] = None
     statistics: Dict[str, Any] = field(default_factory=dict)
+    xai_report: Optional[str] = None
 
     @classmethod
     def from_results(cls, results: Dict[str, Any]) -> "AnalysisContext":
@@ -41,11 +42,12 @@ class AnalysisContext:
             blackspot=results.get("blackspot"),
             contrast=results.get("contrast"),
             statistics=results.get("statistics", {}),
+            xai_report=results.get("xai_report"),
         )
 
     @property
     def has_analysis(self) -> bool:
-        return any([self.segmentation, self.blackspot, self.contrast])
+        return any([self.segmentation, self.blackspot, self.contrast, self.xai_report])
 
     def serialize(self) -> str:
         if not self.has_analysis:
@@ -60,6 +62,8 @@ class AnalysisContext:
         safety_flags = self._serialize_safety_surfaces()
         if safety_flags:
             sections.append(safety_flags)
+        if self.xai_report:
+            sections.append(self.xai_report)
         return "\n\n".join(sections)
 
     def _serialize_segmentation(self) -> str:
@@ -197,6 +201,12 @@ def build_system_prompt(context: AnalysisContext) -> str:
         "to someone with visual-perceptual impairment.\n"
         "- Provide actionable remediation: specific changes like adding contrast tape, "
         "improving lighting, replacing dark flooring, using contrasting furniture.\n"
+        "- For XAI (Explainable AI) findings: explain what the model is focusing on and how "
+        "confident its predictions are. High entropy at boundaries means the model struggles "
+        "to distinguish adjacent surfaces — this correlates with low-contrast visibility for "
+        "patients. GradCAM shows where the model activates for floor detection, which reveals "
+        "how it identifies surfaces for blackspot analysis. Integrated Gradients and Chefer "
+        "Relevancy show pixel-level attribution — which pixels most influence predictions.\n"
         "- When discussing technical details (segmentation classes, model architecture), "
         "be precise and reference the actual data provided.\n"
         "- NEVER invent findings not present in the analysis data above. If a type of "
