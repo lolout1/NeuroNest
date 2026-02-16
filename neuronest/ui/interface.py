@@ -12,7 +12,7 @@ from ..pipeline import NeuroNestApp
 from ..xai import XAIAnalyzer
 from ..xai.renderer import render_notebook_html, render_defect_notebook_html
 from .css import MAIN_CSS
-from ..agent import create_chat_handler
+from ..agent import create_agent_report_generator
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +295,8 @@ def create_gradio_interface():
             + "</div>"
         )
 
+    agent_report_generator = create_agent_report_generator()
+
     # --- Build Gradio interface ---
 
     with gr.Blocks(
@@ -306,10 +308,15 @@ def create_gradio_interface():
         with gr.Column(elem_classes="container"):
             gr.HTML(_HERO_HTML)
 
-            with gr.Tabs(elem_classes="nav-tabs"):
+            # Tier 1: Informational tabs (lighter)
+            with gr.Tabs(elem_classes="info-tabs"):
                 _build_overview_tab()
                 _build_team_tab()
-                _build_demo_tab(
+                _build_technical_tab()
+
+            # Tier 2: Workspace tabs (prominent)
+            with gr.Tabs(elem_classes="workspace-tabs"):
+                agent_report_in_full = _build_demo_tab(
                     app, analyze_wrapper, SAMPLE_IMAGES,
                     sample_images_available, blackspot_ok,
                     analysis_state,
@@ -317,9 +324,8 @@ def create_gradio_interface():
                 _build_xai_tab(
                     xai_wrapper, defect_xai_wrapper, load_sample_gallery,
                     SAMPLE_IMAGES, sample_images_available, analysis_state,
+                    agent_report_generator, agent_report_in_full,
                 )
-                _build_chat_tab(analysis_state)
-                _build_technical_tab()
 
     return interface
 
@@ -452,6 +458,7 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
                 contrast_display = gr.Image(label="WCAG 2.1 contrast ratio analysis", interactive=False, elem_classes="image-output")
             with gr.TabItem("Full Report"):
                 analysis_report = gr.Markdown(value="Upload an image and click **Analyze Environment** to begin.", elem_classes="report-box")
+                agent_report_section = gr.HTML(value="", visible=False, elem_classes="report-box")
 
         analyze_button.click(
             fn=analyze_wrapper,
@@ -459,8 +466,10 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
             outputs=[seg_display, blackspot_display, contrast_display, analysis_report, analysis_state],
         )
 
+    return agent_report_section
 
-def _build_xai_tab(xai_wrapper, defect_xai_wrapper, load_sample_gallery, sample_images, sample_available, analysis_state):
+
+def _build_xai_tab(xai_wrapper, defect_xai_wrapper, load_sample_gallery, sample_images, sample_available, analysis_state, agent_report_generator=None, agent_report_in_full=None):
     with gr.TabItem("Model Interpretability"):
         gr.Markdown("""**7 XAI visualization methods** for interpreting DINOv3-EoMT Vision Transformer decisions.
 Includes defect-focused analysis with hazard overlays and full model understanding suite.
@@ -562,67 +571,50 @@ Run Full Suite on any sample image — results are cached and displayed here aut
                 gallery_btn = gr.Button("Refresh Gallery", variant="secondary")
                 gallery_btn.click(fn=load_sample_gallery, outputs=[gallery_html])
 
+        # Agent panel — floating accordion below XAI sub-tabs
+        if agent_report_generator is not None:
+            with gr.Accordion("AI Agent Analysis", open=False, elem_classes="agent-panel"):
+                gr.Markdown(
+                    "Generate an AI-powered interpretation of your XAI results. "
+                    "Run any XAI method above first, then click the button below."
+                )
+                agent_btn = gr.Button(
+                    "Generate AI Analysis", elem_classes="agent-button", size="lg",
+                )
+                agent_html = gr.HTML(
+                    value='<div style="text-align:center;padding:20px;color:#9ca3af;">'
+                    "Run an XAI analysis above, then click <b>Generate AI Analysis</b>.</div>",
+                    elem_classes="agent-output",
+                )
 
-def _build_chat_tab(analysis_state):
-    with gr.TabItem("AI Assistant"):
-        gr.Markdown(
-            "Ask questions about analysis results, model interpretability findings, or safety recommendations. "
-            "Run analyses in **Live Demo** and/or **Model Interpretability** tabs for context-aware responses."
-        )
+                def _run_agent(current_state):
+                    xai_text = (current_state or {}).get("xai_report", "")
+                    report_html = agent_report_generator(xai_text)
+                    new_state = dict(current_state or {})
+                    new_state["agent_report"] = report_html
+                    if agent_report_in_full is not None:
+                        return (
+                            report_html,
+                            new_state,
+                            gr.update(
+                                value=f'<h2 style="color:#4f46e5;">AI Agent Interpretation</h2>{report_html}',
+                                visible=True,
+                            ),
+                        )
+                    return report_html, new_state
 
-        chatbot = gr.Chatbot(
-            value=[],
-            height=480,
-            type="messages",
-            placeholder="Analysis-aware AI assistant. Ask about hazards, safety, or recommendations.",
-        )
-
-        state_ref = {"value": analysis_state}
-
-        def _get_state():
-            return state_ref["value"]
-
-        chat_handler = create_chat_handler(_get_state)
-
-        def _respond(message, history, current_state):
-            state_ref["value"] = current_state
-            response = chat_handler(message, history)
-            history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": response})
-            return history, ""
-
-        with gr.Row():
-            chat_input = gr.Textbox(
-                placeholder="Ask about the analysis results...",
-                show_label=False,
-                scale=4,
-                container=False,
-            )
-            send_btn = gr.Button("Send", variant="primary", scale=1, min_width=80)
-
-        gr.Examples(
-            examples=[
-                "What hazards did you find in this image?",
-                "Is the floor safe for someone with Alzheimer's?",
-                "What should I fix first?",
-                "Explain the blackspot detection results",
-                "How confident is the model in its predictions?",
-                "What do the XAI visualizations tell us about this room?",
-            ],
-            inputs=chat_input,
-            label="Example questions",
-        )
-
-        send_btn.click(
-            fn=_respond,
-            inputs=[chat_input, chatbot, analysis_state],
-            outputs=[chatbot, chat_input],
-        )
-        chat_input.submit(
-            fn=_respond,
-            inputs=[chat_input, chatbot, analysis_state],
-            outputs=[chatbot, chat_input],
-        )
+                if agent_report_in_full is not None:
+                    agent_btn.click(
+                        fn=_run_agent,
+                        inputs=[analysis_state],
+                        outputs=[agent_html, analysis_state, agent_report_in_full],
+                    )
+                else:
+                    agent_btn.click(
+                        fn=_run_agent,
+                        inputs=[analysis_state],
+                        outputs=[agent_html, analysis_state],
+                    )
 
 
 def _build_technical_tab():

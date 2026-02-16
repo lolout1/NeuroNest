@@ -113,7 +113,93 @@ MAIN_CSS = """
     .xai-report table th { background: #374151; }
 }
 
+/* Info Tabs — lighter, secondary navigation */
+.info-tabs > .tab-nav {
+    display: flex; gap: 4px; padding: 4px 6px;
+    background: #f3f4f6; border-radius: 10px; border: 1px solid #e5e7eb;
+    justify-content: center; flex-wrap: wrap; margin-bottom: 8px;
+}
+.info-tabs > .tab-nav button {
+    padding: 6px 16px !important; border-radius: 6px !important;
+    font-weight: 500 !important; font-size: 0.85em !important;
+    border: none !important; color: #4b5563 !important;
+    transition: all 0.15s ease !important;
+}
+.info-tabs > .tab-nav button:hover { background: #e5e7eb !important; }
+.info-tabs > .tab-nav button.selected {
+    background: #6366f1 !important; color: white !important;
+    box-shadow: 0 1px 4px rgba(99,102,241,0.25) !important;
+}
+
+/* Workspace Tabs — prominent, primary */
+.workspace-tabs > .tab-nav {
+    display: flex; gap: 6px; padding: 6px 8px;
+    background: #eef2ff; border-radius: 12px; border: 1px solid #c7d2fe;
+    justify-content: center; flex-wrap: wrap; margin-top: 12px;
+}
+.workspace-tabs > .tab-nav button {
+    padding: 10px 28px !important; border-radius: 8px !important;
+    font-weight: 600 !important; font-size: 1em !important;
+    border: none !important; transition: all 0.15s ease !important;
+}
+.workspace-tabs > .tab-nav button:hover { background: #ddd6fe !important; }
+.workspace-tabs > .tab-nav button.selected {
+    background: #4f46e5 !important; color: white !important;
+    box-shadow: 0 2px 10px rgba(79,70,229,0.3) !important;
+}
+
+/* Agent Panel — floating accordion */
+.agent-panel {
+    margin-top: 20px !important; border: 2px solid #c7d2fe !important;
+    border-radius: 12px !important; background: #faf5ff !important;
+    box-shadow: 0 4px 16px rgba(79,70,229,0.12) !important;
+}
+.agent-panel > .label-wrap {
+    background: #eef2ff !important; border-radius: 10px 10px 0 0 !important;
+    padding: 12px 16px !important;
+}
+.agent-button {
+    background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%) !important;
+    color: white !important; font-weight: 600 !important;
+    border-radius: 8px !important; border: none !important;
+    height: 48px !important; width: 100% !important;
+    box-shadow: 0 2px 8px rgba(124,58,237,0.3) !important;
+    transition: all 0.2s ease !important;
+}
+.agent-button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(124,58,237,0.4) !important; }
+.agent-output {
+    max-height: 600px; overflow-y: auto; padding: 16px;
+    background: white; border-radius: 0 0 10px 10px; border-top: 1px solid #e5e7eb;
+    line-height: 1.7;
+}
+
+/* Responsive — info/workspace tabs */
+@media (max-width: 768px) {
+    .info-tabs > .tab-nav { overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start; -webkit-overflow-scrolling: touch; }
+    .info-tabs > .tab-nav button { white-space: nowrap; font-size: 0.78em !important; padding: 5px 12px !important; }
+    .workspace-tabs > .tab-nav { overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start; -webkit-overflow-scrolling: touch; }
+    .workspace-tabs > .tab-nav button { white-space: nowrap; font-size: 0.9em !important; padding: 8px 18px !important; }
+    .agent-panel { margin-top: 12px !important; }
+    .agent-button { height: 42px !important; font-size: 0.9em !important; }
+}
+@media (max-width: 480px) {
+    .workspace-tabs > .tab-nav button { font-size: 0.82em !important; padding: 6px 14px !important; }
+}
+
 /* Accessibility */
-@media (prefers-contrast: high) { .sample-section, .controls-row, .xai-controls, .info-card { border: 2px solid currentColor; } }
+@media (prefers-contrast: high) { .sample-section, .controls-row, .xai-controls, .info-card, .agent-panel { border: 2px solid currentColor; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Dark mode — info/workspace/agent */
+@media (prefers-color-scheme: dark) {
+    .info-tabs > .tab-nav { background: #1f2937; border-color: #374151; }
+    .info-tabs > .tab-nav button { color: #d1d5db !important; }
+    .info-tabs > .tab-nav button:hover { background: #374151 !important; }
+    .info-tabs > .tab-nav button.selected { background: #6366f1 !important; color: white !important; }
+    .workspace-tabs > .tab-nav { background: #1e1b4b; border-color: #4338ca; }
+    .workspace-tabs > .tab-nav button:hover { background: #312e81 !important; }
+    .agent-panel { background: #1f2937 !important; border-color: #4338ca !important; }
+    .agent-panel > .label-wrap { background: #312e81 !important; }
+    .agent-output { background: #1f2937; border-color: #374151; }
+}
 """

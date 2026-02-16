@@ -278,3 +278,86 @@ def create_chat_handler(
         )
 
     return chat_fn
+
+
+def build_agent_system_prompt() -> str:
+    return (
+        "You are the NeuroNest XAI Analysis Agent. Your role is to interpret "
+        "Explainable AI (XAI) analysis results from a Vision Transformer model "
+        "(EoMT-DINOv3-Large) that performs semantic segmentation for Alzheimer's "
+        "care environment safety.\n\n"
+        "INSTRUCTIONS:\n"
+        "- Produce a structured safety analysis report from the XAI data provided.\n"
+        "- Organize findings under: Key Findings, Risk Assessment, Recommendations.\n"
+        "- Explain what each XAI method reveals about model behavior in plain language "
+        "suitable for caregivers and family members.\n"
+        "- Entropy = model uncertainty. High entropy at boundaries means the model "
+        "struggles to distinguish adjacent surfaces, correlating with low-contrast "
+        "visibility hazards for patients.\n"
+        "- GradCAM = where the model activates for the floor class, revealing how it "
+        "identifies surfaces for blackspot analysis.\n"
+        "- Integrated Gradients = pixel-level attribution showing which pixels most "
+        "influence predictions.\n"
+        "- Chefer Relevancy = transformer attention attribution showing which image "
+        "regions the model considers most relevant.\n"
+        "- Focus on actionable safety insights for caregivers.\n"
+        "- Use bullet points. Be concise but thorough.\n"
+        "- NEVER invent findings not present in the provided data.\n"
+        "- Format output as clean HTML with <h3>, <ul>, <li> tags.\n"
+        "- Do NOT use markdown formatting — use only HTML tags."
+    )
+
+
+def create_agent_report_generator() -> Callable:
+    if not HF_AVAILABLE:
+        def _unavailable(xai_text):
+            return (
+                '<div class="agent-output"><p>The AI agent requires the '
+                "<code>huggingface_hub</code> package. Install it with: "
+                "<code>pip install huggingface_hub</code></p></div>"
+            )
+        return _unavailable
+
+    def generate_report(xai_text: str) -> str:
+        if not xai_text or not xai_text.strip():
+            return (
+                '<div class="agent-output">'
+                "<p>No XAI analysis data available. Run an XAI method in the "
+                "tabs above first, then click <b>Generate AI Analysis</b>.</p></div>"
+            )
+
+        client = InferenceClient()
+        system = build_agent_system_prompt()
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Analyze these XAI results:\n\n{xai_text}"},
+        ]
+
+        for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
+            try:
+                resp = client.chat_completion(
+                    messages=messages,
+                    model=model,
+                    max_tokens=1024,
+                    temperature=0.3,
+                )
+                content = resp.choices[0].message.content
+                return (
+                    '<div class="agent-output">'
+                    '<h3 style="color:#4f46e5;margin:0 0 12px;">AI Agent Analysis</h3>'
+                    f"{content}"
+                    "</div>"
+                )
+            except Exception as e:
+                logger.warning(f"Agent model {model} failed: {e}")
+                continue
+
+        return (
+            '<div class="agent-output">'
+            "<p>Unable to reach the AI service right now. This can happen due to "
+            "API rate limits on the free HuggingFace Inference tier. Please try again "
+            "in a few moments, or set the <code>HF_TOKEN</code> environment variable "
+            "for higher rate limits.</p></div>"
+        )
+
+    return generate_report
