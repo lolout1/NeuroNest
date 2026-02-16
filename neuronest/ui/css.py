@@ -25,6 +25,23 @@ MAIN_CSS = """
     background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe;
 }
 
+/* Try Now buttons */
+.try-now-row { display: flex; justify-content: center; gap: 12px; margin: 18px 0 6px; flex-wrap: wrap; }
+.try-now-btn {
+    padding: 12px 32px; border-radius: 10px; font-size: 1em; font-weight: 700;
+    cursor: pointer; border: none; letter-spacing: 0.3px;
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: white; box-shadow: 0 4px 14px rgba(79,70,229,0.35);
+    transition: all 0.2s ease;
+}
+.try-now-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(79,70,229,0.45); }
+.try-now-btn:active { transform: translateY(0); }
+.try-now-secondary {
+    background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%) !important;
+    box-shadow: 0 4px 14px rgba(124,58,237,0.3) !important;
+}
+.try-now-secondary:hover { box-shadow: 0 6px 20px rgba(124,58,237,0.4) !important; }
+
 /* Nav Tabs */
 .nav-tabs > .tab-nav {
     display: flex; gap: 4px; padding: 6px;
@@ -54,6 +71,8 @@ MAIN_CSS = """
     .metric { padding: 6px 10px; min-width: 70px; }
     .metric-val { font-size: 1.1em; }
     .badge { font-size: 0.65em; padding: 2px 8px; }
+    .try-now-row { gap: 8px; margin: 12px 0 4px; }
+    .try-now-btn { padding: 10px 22px; font-size: 0.9em; }
     .sample-section { padding: 10px; }
     .xai-controls { padding: 10px; }
     .main-button { height: 46px !important; font-size: 0.95em !important; }

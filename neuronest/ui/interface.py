@@ -355,6 +355,24 @@ _HERO_HTML = """
         <span class="badge">Detectron2</span>
         <span class="badge">Gradio 5.x</span>
     </div>
+    <div class="try-now-row">
+        <button class="try-now-btn" onclick="
+            var ws = document.querySelector('.workspace-tabs');
+            if (ws) {
+                ws.scrollIntoView({behavior: 'smooth', block: 'start'});
+                var btn = ws.querySelector('.tab-nav button');
+                if (btn) setTimeout(function(){ btn.click(); }, 400);
+            }
+        ">Try Live Demo</button>
+        <button class="try-now-btn try-now-secondary" onclick="
+            var ws = document.querySelector('.workspace-tabs');
+            if (ws) {
+                ws.scrollIntoView({behavior: 'smooth', block: 'start'});
+                var btns = ws.querySelectorAll('.tab-nav button');
+                if (btns.length > 1) setTimeout(function(){ btns[1].click(); }, 400);
+            }
+        ">Explore Model XAI</button>
+    </div>
 </div>"""
 
 
