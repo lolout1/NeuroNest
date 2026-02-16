@@ -656,7 +656,7 @@ def create_gradio_interface():
                     target_class_id=class_id,
                     progress_callback=progress,
                 )
-                key_order = ["attention", "rollout", "gradcam", "entropy", "pca", "saliency", "chefer"]
+                key_order = ["attention", "rollout", "gradcam", "entropy", "pca", "integrated_gradients", "chefer"]
                 for i, key in enumerate(key_order):
                     r = results.get(key, {})
                     vis = r.get("visualization")
@@ -687,7 +687,7 @@ def create_gradio_interface():
                     "GradCAM": ("gradcam_segmentation", {"target_class_id": class_id}, 2),
                     "Predictive Entropy": ("predictive_entropy", {}, 3),
                     "Feature PCA": ("feature_pca", {"layer": layer_idx}, 4),
-                    "Class Saliency": ("class_saliency", {"target_class_id": class_id}, 5),
+                    "Integrated Gradients": ("integrated_gradients", {"target_class_id": class_id}, 5),
                     "Chefer Relevancy": ("chefer_relevancy", {"target_class_id": class_id}, 6),
                 }
                 if method in method_map:
@@ -701,7 +701,7 @@ def create_gradio_interface():
                     report_text = result.get("report", "")
                     progress(1.0, desc=f"{method} complete")
 
-                    if method in ("GradCAM", "Class Saliency", "Chefer Relevancy"):
+                    if method in ("GradCAM", "Integrated Gradients", "Chefer Relevancy"):
                         app.xai_analyzer.cleanup_fp32()
 
             return outputs + [report_text]
@@ -919,7 +919,7 @@ Multi-model ensemble pipeline that analyzes room environments for visual hazards
 - **Dynamic INT8 quantization**: ~2-3x CPU inference speedup via `torch.quantization.quantize_dynamic`
 - **Vectorized analysis**: 50-200x faster contrast computation using numpy C-level operations
 - **Concurrent pipeline**: Blackspot + contrast analysis execute in parallel (ThreadPoolExecutor)
-- **7 XAI methods**: Self-attention, rollout, GradCAM, entropy, PCA, saliency, Chefer relevancy
+- **7 XAI methods**: Self-attention, rollout, GradCAM, entropy, PCA, Integrated Gradients, Chefer relevancy
 - **CPU-optimized**: Runs on HuggingFace Spaces free tier (2 vCPU, 16 GB RAM)
 - **Hook-based attention capture**: Forward hooks bypass SDPA limitations for XAI
 
@@ -1061,7 +1061,7 @@ Each visualization includes colorbars, quantitative metrics, and method citation
 | Category | Methods | Insight |
 |----------|---------|---------|
 | **Attention** | Self-Attention, Rollout | Where the model focuses spatially |
-| **Gradient** | GradCAM, Saliency, Chefer | What drives specific class predictions |
+| **Gradient** | GradCAM, Integrated Gradients, Chefer | What drives specific class predictions |
 | **Output** | Entropy, Feature PCA | Confidence levels and learned representations |
 """)
 
@@ -1103,7 +1103,7 @@ Each visualization includes colorbars, quantitative metrics, and method citation
                                     "GradCAM",
                                     "Predictive Entropy",
                                     "Feature PCA",
-                                    "Class Saliency",
+                                    "Integrated Gradients",
                                     "Chefer Relevancy",
                                 ],
                                 value="Full Suite",
@@ -1130,7 +1130,7 @@ Each visualization includes colorbars, quantitative metrics, and method citation
                                 ],
                                 value="Auto (dominant)",
                                 label="Target Class (for gradient methods)",
-                                info="Affects GradCAM, Saliency, Chefer. Auto picks the largest class.",
+                                info="Affects GradCAM, Integrated Gradients, Chefer. Auto picks the largest class.",
                             )
                             xai_button = gr.Button(
                                 "Run XAI Analysis",
@@ -1151,10 +1151,10 @@ Each visualization includes colorbars, quantitative metrics, and method citation
                         xai_rollout = gr.Image(label="2. Attention Rollout", interactive=False, elem_classes="xai-panel")
 
                     gr.Markdown("### Gradient-Based Methods")
-                    gr.Markdown("*What drives class predictions? These use backpropagation to attribute importance.*")
+                    gr.Markdown("*What drives class predictions? Gradient-based attribution methods identify influential regions and pixels.*")
                     with gr.Row(equal_height=True):
                         xai_gradcam = gr.Image(label="3. GradCAM", interactive=False, elem_classes="xai-panel")
-                        xai_saliency = gr.Image(label="6. Class Saliency", interactive=False, elem_classes="xai-panel")
+                        xai_saliency = gr.Image(label="6. Integrated Gradients", interactive=False, elem_classes="xai-panel")
                         xai_chefer = gr.Image(label="7. Chefer Relevancy", interactive=False, elem_classes="xai-panel")
 
                     gr.Markdown("### Output & Feature Analysis")
@@ -1223,7 +1223,7 @@ Each visualization includes colorbars, quantitative metrics, and method citation
 | 3 | GradCAM | Gradient | Yes | JET | Selvaraju et al. 2017 |
 | 4 | Predictive Entropy | Output | No | MAGMA | Shannon 1948 |
 | 5 | Feature PCA | Hidden State | No | RGB | SVD projection |
-| 6 | Class Saliency | Gradient | Yes | HOT | Simonyan et al. 2014 |
+| 6 | Integrated Gradients | Gradient | Yes | HOT | Sundararajan et al. 2017 |
 | 7 | Chefer Relevancy | Attn x Grad | Yes | INFERNO | Chefer et al. 2021 |
 
 ## Deployment

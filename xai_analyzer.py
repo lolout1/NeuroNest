@@ -3,7 +3,7 @@ Explainable AI (XAI) analyzer for NeuroNest.
 
 7 visualization methods for EoMT-DINOv3 semantic segmentation:
 1. Self-Attention Maps   2. Attention Rollout   3. GradCAM
-4. Predictive Entropy    5. Feature PCA         6. Class Saliency
+4. Predictive Entropy    5. Feature PCA         6. Integrated Gradients
 7. Chefer Relevancy
 
 CPU-compatible. Memory-managed for HF Spaces (16 GB).
@@ -147,10 +147,10 @@ METHOD_INFO = {
         "detail": "SVD projection of 1024-dim features to RGB",
         "cmap": None,
     },
-    "saliency": {
-        "title": "Class Saliency",
-        "desc": "Which input pixels most influence the target class",
-        "detail": "Simonyan et al. (2014) — input gradient magnitude",
+    "integrated_gradients": {
+        "title": "Integrated Gradients",
+        "desc": "Principled pixel-level attribution via path integral from baseline to input",
+        "detail": "Sundararajan et al. (2017) — axiom-satisfying attribution (completeness + sensitivity)",
         "cmap": cv2.COLORMAP_HOT,
     },
     "chefer": {
@@ -696,48 +696,85 @@ class XAIAnalyzer:
         }
 
     # ------------------------------------------------------------------
-    # 6. Class Saliency
+    # 6. Integrated Gradients (replaces vanilla saliency)
     # ------------------------------------------------------------------
 
-    def class_saliency(self, image, target_class_id=None):
+    def integrated_gradients(self, image, target_class_id=None, n_steps=25):
+        """Sundararajan et al. (2017) — principled attribution via path integral.
+
+        Computes attribution by integrating gradients along the straight-line
+        path from a zero baseline to the actual input. Satisfies completeness
+        and sensitivity axioms (unlike vanilla saliency).
+
+        Args:
+            n_steps: Number of interpolation steps (higher = more accurate but slower).
+        """
         t0 = time.perf_counter()
+        fp32 = self._get_fp32()
         inputs, oh, ow = self._preprocess(image)
 
-        # Pass ALL inputs (including pixel_mask etc.) with grad enabled on pixel_values
-        outputs, pv = self._fp32_forward(inputs, need_grad_pv=True)
-        seg = self._seg_from_outputs(outputs, oh, ow)
+        # First pass to determine target class
+        with torch.no_grad():
+            outputs_ref = fp32(**inputs)
+        seg = self._seg_from_outputs(outputs_ref, oh, ow)
         if target_class_id is None:
             target_class_id = self._dominant_class(seg)
         cn = self._cname(target_class_id)
+        del outputs_ref
 
-        score = outputs.class_queries_logits[0][:, target_class_id].sum()
-        score.backward()
+        pv = inputs["pixel_values"]  # (1, 3, H, W)
+        baseline = torch.zeros_like(pv)  # black baseline
 
-        fp32 = self._get_fp32()
-        if pv.grad is not None:
-            sal = pv.grad[0].abs().max(dim=0).values.detach().cpu().numpy()
-            sal = cv2.resize(sal, (ow, oh), interpolation=cv2.INTER_CUBIC)
-            sal_max = float(sal.max())
-            sensitive_pct = float((sal > sal.mean() + sal.std()).mean() * 100)
-            blended = self._blend(sal, image, cv2.COLORMAP_HOT)
-        else:
-            blended = image.copy()
-            sal_max = 0
-            sensitive_pct = 0
-            logger.warning("[XAI] Saliency: no gradient on pixel_values")
+        # Accumulate gradients along interpolation path
+        ig_grads = torch.zeros_like(pv)
+        for step in range(n_steps + 1):
+            alpha = step / n_steps
+            interp = baseline + alpha * (pv - baseline)
+            interp = interp.requires_grad_(True)
 
-        extra = f"Target: {cn} (ID {target_class_id}) | Peak grad={sal_max:.4f} | Sensitive={sensitive_pct:.0f}%"
-        vis = self._annotate(blended, "saliency", f"Saliency | {cn}", extra)
+            fwd = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                   for k, v in inputs.items()}
+            fwd["pixel_values"] = interp
+
+            outputs = fp32(**fwd)
+            score = outputs.class_queries_logits[0][:, target_class_id].sum()
+            score.backward()
+
+            if interp.grad is not None:
+                ig_grads += interp.grad.detach()
+
+            fp32.zero_grad()
+            if interp.grad is not None:
+                interp.grad.data.zero_()
+
+        # Riemann sum approximation: IG = (input - baseline) * mean(gradients)
+        ig_attr = (pv - baseline) * ig_grads / (n_steps + 1)
+        # Take max absolute attribution across RGB channels
+        attr_map = ig_attr[0].abs().max(dim=0).values.detach().cpu().numpy()
+        attr_map = cv2.resize(attr_map, (ow, oh), interpolation=cv2.INTER_CUBIC)
+
+        attr_max = float(attr_map.max())
+        # Convergence delta: sum of attributions should approximate output difference
+        attr_sum = float(ig_attr.sum())
+        significant_pct = float((attr_map > attr_map.mean() + attr_map.std()).mean() * 100)
+
+        blended = self._blend(attr_map, image, cv2.COLORMAP_HOT)
+        extra = f"Target: {cn} | {n_steps} steps | Significant={significant_pct:.0f}% | Sum={attr_sum:.2f}"
+        vis = self._annotate(blended, "integrated_gradients",
+                             f"Integrated Gradients | {cn}", extra)
 
         elapsed = time.perf_counter() - t0
-        fp32.zero_grad()
+        del ig_grads, ig_attr, baseline
         gc.collect()
         return {
             "visualization": vis,
+            "attr_map": attr_map,
             "report": (
-                f"**Class Saliency** (target: '{cn}', ID {target_class_id}): "
-                f"Peak gradient={sal_max:.4f}, sensitive area={sensitive_pct:.1f}%. "
-                f"Bright pixels = high influence on class prediction. {elapsed:.1f}s"
+                f"**Integrated Gradients** (target: '{cn}', ID {target_class_id}): "
+                f"{n_steps} steps, peak={attr_max:.4f}, "
+                f"significant area={significant_pct:.1f}%, attribution sum={attr_sum:.2f}. "
+                f"Satisfies completeness axiom (Sundararajan 2017). "
+                f"Bright = pixels most influencing '{cn}' prediction. {elapsed:.1f}s"
             ),
         }
 
@@ -842,9 +879,13 @@ class XAIAnalyzer:
     # Report
     # ------------------------------------------------------------------
 
-    def generate_xai_report(self, image, seg_mask=None):
+    def generate_xai_report(self, image, seg_mask=None, method_results=None):
+        """Generate a comprehensive cross-method XAI analysis report.
+
+        When method_results is provided (from run_full_analysis), produces
+        deeper cross-method correlation analysis and practical insights.
+        """
         t0 = time.perf_counter()
-        ent_result = self.predictive_entropy(image)
 
         if seg_mask is None:
             inputs, oh, ow = self._preprocess(image)
@@ -854,76 +895,216 @@ class XAIAnalyzer:
             del outputs
             gc.collect()
 
+        oh, ow = seg_mask.shape[:2]
         cls, cnt = np.unique(seg_mask, return_counts=True)
         total = seg_mask.size
         info = sorted(zip(cls, cnt), key=lambda x: -x[1])
 
-        emap = ent_result.get("entropy_map")
-        me = float(emap.mean()) if emap is not None else 0
-        hp = float((emap > 0.5).mean() * 100) if emap is not None else 0
+        # --- Entropy analysis ---
+        ent_result = None
+        emap = None
+        me, hp = 0, 0
+        if method_results and "entropy" in method_results:
+            ent_result = method_results["entropy"]
+            emap = ent_result.get("entropy_map")
+        if emap is None:
+            ent_result = self.predictive_entropy(image)
+            emap = ent_result.get("entropy_map")
 
-        ub = []
+        if emap is not None:
+            me = float(emap.mean())
+            hp = float((emap > 0.5).mean() * 100)
+
+        # --- Boundary uncertainty analysis ---
+        boundary_info = []
         if emap is not None:
             try:
                 from skimage.segmentation import find_boundaries
-                for cid, _ in info[:5]:
+                for cid, _ in info[:8]:
                     bd = find_boundaries(seg_mask == cid, mode="thick")
                     if bd.any():
                         be = float(emap[bd].mean())
-                        if be > 0.3:
-                            ub.append((self._cname(cid), be))
+                        interior = (seg_mask == cid) & ~bd
+                        ie = float(emap[interior].mean()) if interior.any() else 0
+                        boundary_info.append({
+                            "name": self._cname(cid),
+                            "id": int(cid),
+                            "boundary_entropy": be,
+                            "interior_entropy": ie,
+                            "area_pct": float(cnt[list(cls).index(cid)] / total * 100),
+                            "confidence_ratio": ie / (be + 1e-8),
+                        })
             except ImportError:
                 pass
 
         lines = [
-            "# XAI Analysis Report\n",
-            "## Scene Composition",
-            f"**{len(cls)} categories** detected:\n",
+            "# Comprehensive XAI Analysis Report\n",
         ]
-        for cid, c in info[:8]:
+
+        # --- 1. Scene Understanding ---
+        lines += [
+            "## 1. Scene Composition & Object Distribution",
+            f"The model identified **{len(cls)} semantic categories** in this scene, "
+            f"processed through {self._n_encoder} encoder layers and {self._num_layers - self._n_encoder} decoder layers.\n",
+        ]
+        for cid, c in info[:10]:
             p = c / total * 100
-            bar = "\u2588" * int(p / 5) + "\u2591" * max(0, 20 - int(p / 5))
-            lines.append(f"- **{self._cname(cid)}**: {p:.1f}% `{bar}`")
+            bar = "\u2588" * int(p / 4) + "\u2591" * max(0, 25 - int(p / 4))
+            lines.append(f"- **{self._cname(cid)}** (ID {cid}): {p:.1f}% `{bar}`")
 
+        if len(info) > 10:
+            rest_pct = sum(c for _, c in info[10:]) / total * 100
+            lines.append(f"- *{len(info)-10} more categories*: {rest_pct:.1f}% combined")
+
+        # --- 2. Model Confidence ---
         lines += [
-            "\n## Model Confidence",
-            f"- Mean uncertainty: **{me:.3f}**",
-            f"- High-uncertainty pixels: **{hp:.1f}%**",
+            "\n## 2. Prediction Confidence Analysis",
+            f"- **Mean entropy**: {me:.3f} (range 0-1, lower = more confident)",
+            f"- **High-uncertainty pixels**: {hp:.1f}% of image",
         ]
-        if me < 0.15:
-            lines.append("- Overall: **Highly confident** predictions across the scene")
+        if me < 0.10:
+            lines.append("- Assessment: **Very high confidence** — the model strongly recognizes all scene elements")
+        elif me < 0.20:
+            lines.append("- Assessment: **High confidence** — clear semantic boundaries with minor ambiguity")
         elif me < 0.35:
-            lines.append("- Overall: **Moderate confidence** — some ambiguous boundaries")
+            lines.append("- Assessment: **Moderate confidence** — some object boundaries or textures cause uncertainty")
         else:
-            lines.append("- Overall: **Significant uncertainty** — review predictions carefully")
+            lines.append("- Assessment: **Low confidence** — significant regions where the model is uncertain")
 
-        if ub:
-            lines.append("\n### Uncertain Boundaries")
-            for n, e in sorted(ub, key=lambda x: -x[1])[:5]:
-                lines.append(f"- **{n}**: boundary entropy={e:.3f}")
+        # --- 3. Boundary Analysis ---
+        if boundary_info:
+            lines += ["\n## 3. Boundary Clarity & Transition Zones"]
+            uncertain = [b for b in boundary_info if b["boundary_entropy"] > 0.25]
+            clear = [b for b in boundary_info if b["boundary_entropy"] <= 0.25]
+
+            if uncertain:
+                lines.append("\n**Challenging boundaries** (high entropy at transitions):")
+                for b in sorted(uncertain, key=lambda x: -x["boundary_entropy"])[:5]:
+                    lines.append(
+                        f"- **{b['name']}** boundaries: entropy={b['boundary_entropy']:.3f} "
+                        f"(interior={b['interior_entropy']:.3f}, ratio={b['confidence_ratio']:.2f})"
+                    )
+                lines.append(
+                    "\n> *High boundary entropy suggests the model struggles to delineate these objects "
+                    "from their surroundings — a pattern also observed in human visual perception "
+                    "for Alzheimer's patients with low-contrast environments.*"
+                )
+            if clear:
+                lines.append("\n**Well-defined boundaries** (model is confident):")
+                for b in sorted(clear, key=lambda x: x["boundary_entropy"])[:3]:
+                    lines.append(
+                        f"- **{b['name']}**: boundary entropy={b['boundary_entropy']:.3f} "
+                        f"(strong semantic contrast with neighbors)"
+                    )
+
+        # --- 4. Cross-Method Insights ---
+        lines += ["\n## 4. Cross-Method Interpretation"]
+
+        # Attention insights
+        has_attn = method_results and "attention" in method_results and "Error" not in method_results["attention"].get("report", "")
+        has_rollout = method_results and "rollout" in method_results and "Error" not in method_results["rollout"].get("report", "")
+        has_gradcam = method_results and "gradcam" in method_results and "Error" not in method_results["gradcam"].get("report", "")
+        has_ig = method_results and "integrated_gradients" in method_results and "Error" not in method_results["integrated_gradients"].get("report", "")
+        has_chefer = method_results and "chefer" in method_results and "Error" not in method_results["chefer"].get("report", "")
+        has_pca = method_results and "pca" in method_results and "Error" not in method_results["pca"].get("report", "")
+
+        if has_attn and has_rollout:
+            lines += [
+                "\n### Attention Analysis (Self-Attention + Rollout)",
+                "- **Self-Attention** shows where a *single layer* focuses — useful for understanding "
+                "what features are processed at different network depths",
+                "- **Attention Rollout** aggregates across *all 20 encoder layers*, revealing the "
+                "model's overall spatial priority. The cumulative attention reveals which scene "
+                "regions are most \"important\" to the final representation",
+                "- If rollout focuses on object centers while self-attention spreads across edges, "
+                "the model has learned strong object-level representations",
+            ]
+
+        if has_gradcam and has_ig:
+            lines += [
+                "\n### Gradient Attribution (GradCAM + Integrated Gradients)",
+                "- **GradCAM** highlights the *internal feature map* regions that activate for a class "
+                "— operates in the model's latent space (coarse spatial resolution)",
+                "- **Integrated Gradients** attributes importance to *individual input pixels* "
+                "via a principled path integral — operates in pixel space (full resolution)",
+                "- Agreement between both methods indicates robust class localization. "
+                "Disagreement may reveal that the model uses contextual cues (e.g., detecting "
+                "'floor' partly from seeing 'furniture' nearby)",
+            ]
+        elif has_ig:
+            lines += [
+                "\n### Gradient Attribution (Integrated Gradients)",
+                "- Attributions satisfying the *completeness axiom*: total attribution equals the "
+                "difference between the model's prediction on the input vs. a black baseline",
+                "- Bright regions show which pixels most influence the target class prediction",
+            ]
+
+        if has_chefer:
+            lines += [
+                "\n### Transformer-Specific Attribution (Chefer Relevancy)",
+                "- Combines attention patterns *with* gradient flow across all layers — the most "
+                "theoretically grounded method for Vision Transformers",
+                "- Green overlay indicates regions the model deems \"relevant\" to its prediction",
+                "- Complements GradCAM by capturing token-level interactions specific to "
+                "the self-attention architecture",
+            ]
+
+        if has_pca:
+            lines += [
+                "\n### Learned Feature Structure (Feature PCA)",
+                "- Projects 1024-dimensional hidden states to 3 principal components (RGB channels)",
+                "- Regions with **similar colors** share similar learned representations — "
+                "revealing how the model internally groups scene elements",
+                "- If floor and furniture have distinct colors, the model has learned to differentiate "
+                "them at the feature level (critical for accurate blackspot detection)",
+            ]
+
+        # --- 5. Accessibility Implications ---
+        lines += ["\n## 5. Implications for Accessibility Analysis"]
+        if boundary_info:
+            floor_related = [b for b in boundary_info
+                             if any(f in b["name"].lower() for f in ["floor", "carpet", "rug", "mat"])]
+            if floor_related:
+                lines.append("\n**Floor boundary analysis:**")
+                for b in floor_related:
+                    if b["boundary_entropy"] > 0.3:
+                        lines.append(
+                            f"- **{b['name']}** has uncertain boundaries (entropy={b['boundary_entropy']:.3f}) — "
+                            f"this suggests low visual contrast that may also challenge Alzheimer's patients"
+                        )
+                    else:
+                        lines.append(
+                            f"- **{b['name']}** has clear boundaries (entropy={b['boundary_entropy']:.3f}) — "
+                            f"model can easily distinguish this surface from surroundings"
+                        )
 
         lines += [
-            "\n## Method Summary",
-            "| Method | Type | What It Shows |",
-            "|--------|------|--------------|",
-            "| Self-Attention | Attention | Single-layer spatial focus pattern |",
-            "| Attention Rollout | Attention | Cumulative focus across all encoder layers |",
-            "| GradCAM | Gradient | Regions activating target class prediction |",
-            "| Predictive Entropy | Output | Per-pixel classification uncertainty |",
-            "| Feature PCA | Hidden State | Learned feature structure (false-color) |",
-            "| Class Saliency | Gradient | Input pixels influencing class decision |",
-            "| Chefer Relevancy | Attn x Grad | Transformer-specific attribution map |",
-            f"\n## Architecture",
-            f"- **Model**: DINOv3-EoMT-Large ({self._num_layers} layers, {self._num_heads} heads)",
-            f"- **Patch size**: {self._patch_size}px, **Classes**: 150 (ADE20K)",
-            f"- **Encoder**: {self._n_encoder} layers, **Decoder**: {self._num_layers - self._n_encoder} layers",
-            "\n## References",
-            "- Attention Rollout: Abnar & Zuidema (2020)",
-            "- GradCAM: Selvaraju et al. (2017)",
-            "- Chefer Relevancy: Chefer et al. (2021)",
-            "- Saliency Maps: Simonyan et al. (2014)",
+            "\n> *The XAI visualizations above reveal how DINOv3-EoMT processes scene geometry. "
+            "Regions where the model shows high uncertainty or diffuse attention correlate with "
+            "areas that may present visual navigation challenges for individuals with "
+            "Alzheimer's-related perceptual deficits.*",
         ]
-        return {"visualization": ent_result["visualization"], "report": "\n".join(lines)}
+
+        # --- 6. Method Reference ---
+        lines += [
+            "\n## 6. Method Reference",
+            "| Method | Type | Key Property | Reference |",
+            "|--------|------|-------------|-----------|",
+            "| Self-Attention | Attention | Single-layer spatial focus | Vaswani et al. (2017) |",
+            "| Attention Rollout | Attention | Multi-layer cumulative focus | Abnar & Zuidema (2020) |",
+            "| GradCAM | Gradient | Class-discriminative localization | Selvaraju et al. (2017) |",
+            "| Predictive Entropy | Output | Per-pixel classification uncertainty | Shannon (1948) |",
+            "| Feature PCA | Hidden State | Learned representation structure | — |",
+            "| Integrated Gradients | Gradient | Axiom-satisfying pixel attribution | Sundararajan et al. (2017) |",
+            "| Chefer Relevancy | Attn x Grad | ViT-specific relevance propagation | Chefer et al. (2021) |",
+            f"\n**Architecture**: DINOv3-EoMT-Large — {self._num_layers} layers "
+            f"({self._n_encoder} encoder + {self._num_layers - self._n_encoder} decoder), "
+            f"{self._num_heads} heads, {self._patch_size}px patches, 150 ADE20K classes",
+        ]
+
+        elapsed = time.perf_counter() - t0
+        vis = ent_result["visualization"] if ent_result else None
+        return {"visualization": vis, "report": "\n".join(lines)}
 
     # ------------------------------------------------------------------
     # Orchestrator
@@ -954,7 +1135,7 @@ class XAIAnalyzer:
             ("entropy",   self.predictive_entropy,  {}),
             ("pca",       self.feature_pca,         {"layer": layer}),
             ("gradcam",   self.gradcam_segmentation, {"target_class_id": target_class_id}),
-            ("saliency",  self.class_saliency,       {"target_class_id": target_class_id}),
+            ("integrated_gradients", self.integrated_gradients, {"target_class_id": target_class_id}),
             ("chefer",    self.chefer_relevancy,      {"target_class_id": target_class_id}),
         ]
 
@@ -969,7 +1150,7 @@ class XAIAnalyzer:
 
         _progress(0.9, "Generating report...")
         try:
-            results["report"] = self.generate_xai_report(image)
+            results["report"] = self.generate_xai_report(image, method_results=results)
         except Exception as e:
             logger.error(f"[XAI] report failed: {e}")
             results["report"] = {"visualization": None, "report": f"Report generation failed: {e}"}
@@ -979,7 +1160,7 @@ class XAIAnalyzer:
         logger.info(f"[XAI] Full analysis done in {elapsed:.1f}s")
 
         # Count successes
-        ok = sum(1 for k in ["attention", "rollout", "entropy", "pca", "gradcam", "saliency", "chefer"]
+        ok = sum(1 for k in ["attention", "rollout", "entropy", "pca", "gradcam", "integrated_gradients", "chefer"]
                  if k in results and "Error" not in results[k].get("report", ""))
         logger.info(f"[XAI] {ok}/7 methods succeeded")
 
