@@ -122,22 +122,27 @@ class IndoorImageDataset(Dataset):
             return
 
         logger.info(f"Loading ADE20K {split} split from HuggingFace...")
-        try:
-            ds = load_dataset(
-                "scene_parse_150", split=split,
-                trust_remote_code=True,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to load ADE20K: {e}")
-            logger.info("Trying alternative dataset name...")
+        # Try multiple dataset names — the canonical name has moved over time
+        dataset_names = [
+            "scene_parse_150",
+            "zhoubolei/scene_parse_150",
+            "1aurent/ADE20K",
+        ]
+        ds = None
+        for name in dataset_names:
             try:
-                ds = load_dataset(
-                    "huggingface/scene-parse-150", split=split,
-                    trust_remote_code=True,
-                )
-            except Exception as e2:
-                logger.error(f"Could not load ADE20K: {e2}")
-                return
+                ds = load_dataset(name, split=split)
+                logger.info(f"Loaded ADE20K from '{name}'")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to load '{name}': {e}")
+                continue
+        if ds is None:
+            logger.error(
+                "Could not load ADE20K from any known source. "
+                "Use --local-dirs to provide images instead."
+            )
+            return
 
         logger.info(f"ADE20K loaded: {len(ds)} images in {split} split")
 
