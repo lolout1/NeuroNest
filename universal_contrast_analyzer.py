@@ -264,14 +264,21 @@ class UniversalContrastAnalyzer:
         
         return True, None
     
+    # Severity color palette (colorblind-accessible)
+    SEVERITY_COLORS = {
+        'critical': (220, 20, 60),    # Crimson
+        'high': (255, 140, 0),        # Dark orange
+        'medium': (255, 215, 0),      # Gold
+    }
+
     def analyze_contrast(self, image: np.ndarray, segmentation: np.ndarray) -> Dict:
         """
         Perform comprehensive contrast analysis between ALL adjacent objects.
-        
+
         Args:
             image: RGB image
             segmentation: Segmentation mask with class IDs
-            
+
         Returns:
             Dictionary containing analysis results and visualizations
         """
@@ -289,27 +296,27 @@ class UniversalContrastAnalyzer:
                 'floor_object_issues': 0
             }
         }
-        
+
         # Get unique segments
         unique_segments = np.unique(segmentation)
         unique_segments = unique_segments[unique_segments != 0]  # Remove background
         results['statistics']['total_segments'] = len(unique_segments)
-        
+
         # Build segment information
         segment_info = {}
-        
+
         logger.info(f"Building segment information for {len(unique_segments)} segments...")
-        
+
         for seg_id in unique_segments:
             mask = segmentation == seg_id
             area = np.sum(mask)
-            
+
             if area < 50:  # Skip very small segments
                 continue
-            
+
             category = self.class_to_category.get(seg_id, 'unknown')
             color = self.extract_dominant_color(image, mask)
-            
+
             segment_info[seg_id] = {
                 'category': category,
                 'mask': mask,
@@ -317,49 +324,49 @@ class UniversalContrastAnalyzer:
                 'area': area,
                 'class_id': seg_id
             }
-        
+
         # Find all adjacent segment pairs
         logger.info("Finding adjacent segments...")
         adjacencies = self.find_adjacent_segments(segmentation)
         logger.info(f"Found {len(adjacencies)} adjacent segment pairs")
-        
+
         # Analyze each adjacent pair
         for (seg1_id, seg2_id), boundary in adjacencies.items():
             if seg1_id not in segment_info or seg2_id not in segment_info:
                 continue
-            
+
             info1 = segment_info[seg1_id]
             info2 = segment_info[seg2_id]
-            
+
             # Skip if both are unknown categories
             if info1['category'] == 'unknown' and info2['category'] == 'unknown':
                 continue
-            
+
             results['statistics']['analyzed_pairs'] += 1
-            
+
             # Check contrast sufficiency
             is_sufficient, severity = self.is_contrast_sufficient(
-                info1['color'], info2['color'], 
+                info1['color'], info2['color'],
                 info1['category'], info2['category']
             )
-            
+
             if not is_sufficient:
                 results['statistics']['low_contrast_pairs'] += 1
-                
+
                 # Calculate detailed metrics
                 wcag_ratio = self.calculate_wcag_contrast(info1['color'], info2['color'])
                 hue_diff = self.calculate_hue_difference(info1['color'], info2['color'])
                 sat_diff = self.calculate_saturation_difference(info1['color'], info2['color'])
-                
+
                 # Check if it's a floor-object issue
                 is_floor_object = (
                     (info1['category'] == 'floor' and info2['category'] in ['furniture', 'objects']) or
                     (info2['category'] == 'floor' and info1['category'] in ['furniture', 'objects'])
                 )
-                
+
                 if is_floor_object:
                     results['statistics']['floor_object_issues'] += 1
-                
+
                 # Count by severity
                 if severity == 'critical':
                     results['statistics']['critical_issues'] += 1
@@ -367,7 +374,7 @@ class UniversalContrastAnalyzer:
                     results['statistics']['high_priority_issues'] += 1
                 elif severity == 'medium':
                     results['statistics']['medium_priority_issues'] += 1
-                
+
                 # Record the issue
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
@@ -381,41 +388,253 @@ class UniversalContrastAnalyzer:
                     'is_floor_object': is_floor_object,
                     'boundary_mask': boundary
                 }
-                
+
                 results['issues'].append(issue)
-                
-                # Visualize on the output image
-                self._visualize_issue(results['visualization'], boundary, severity)
-        
+
         # Sort issues by severity
         severity_order = {'critical': 0, 'high': 1, 'medium': 2}
         results['issues'].sort(key=lambda x: severity_order.get(x['severity'], 3))
-        
+
+        # Build enhanced visualization
+        results['visualization'] = self._create_enhanced_visualization(
+            image, results['issues'], results['statistics']
+        )
+
         logger.info(f"Contrast analysis complete: {results['statistics']['low_contrast_pairs']} issues found")
-        
+
         return results
-    
-    def _visualize_issue(self, image: np.ndarray, boundary: np.ndarray, severity: str):
-        """Add visual indicators for contrast issues"""
-        # Color coding by severity
-        colors = {
-            'critical': (255, 0, 0),     # Red
-            'high': (255, 128, 0),       # Orange
-            'medium': (255, 255, 0),     # Yellow
-        }
-        
-        color = colors.get(severity, (255, 255, 255))
-        
-        # Dilate boundary for better visibility
+
+    # ── Visualization helpers ─────────────────────────────────────────
+
+    @staticmethod
+    def _draw_text_outlined(image, text, pos, scale, color,
+                            thickness=1, font=cv2.FONT_HERSHEY_SIMPLEX):
+        """Draw text with black outline for readability on any background."""
+        cv2.putText(image, text, pos, font, scale, (0, 0, 0),
+                    thickness + 2, cv2.LINE_AA)
+        cv2.putText(image, text, pos, font, scale, color,
+                    thickness, cv2.LINE_AA)
+
+    def _draw_boundary_glow(self, image, boundary, severity):
+        """Draw a multi-layer glow contour for a boundary mask."""
+        color = self.SEVERITY_COLORS.get(severity, (255, 255, 255))
         kernel = np.ones((3, 3), np.uint8)
         dilated = cv2.dilate(boundary.astype(np.uint8), kernel, iterations=2)
-        
-        # Apply color overlay with transparency
+        contours, _ = cv2.findContours(
+            dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        # Glow layers: thick + transparent → thin + opaque
+        for thick, alpha in [(8, 0.15), (5, 0.25), (3, 0.45)]:
+            overlay = image.copy()
+            cv2.drawContours(overlay, contours, -1, color, thick, cv2.LINE_AA)
+            cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+        # Solid core
+        cv2.drawContours(image, contours, -1, color, 2, cv2.LINE_AA)
+
+    def _draw_issue_markers(self, image, issues, max_markers=8):
+        """Draw numbered circle markers at each issue boundary centroid."""
+        for idx, issue in enumerate(issues[:max_markers], 1):
+            bm = issue['boundary_mask']
+            ys, xs = np.where(bm)
+            if len(ys) == 0:
+                continue
+            cx, cy = int(np.median(xs)), int(np.median(ys))
+            h, w = image.shape[:2]
+            cx = np.clip(cx, 25, w - 25)
+            cy = np.clip(cy, 25, h - 25)
+
+            color = self.SEVERITY_COLORS.get(issue['severity'], (255, 255, 255))
+
+            # White filled circle + colored border
+            cv2.circle(image, (cx, cy), 18, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(image, (cx, cy), 18, color, 3, cv2.LINE_AA)
+
+            # Number inside
+            num = str(idx)
+            ts = cv2.getTextSize(num, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            cv2.putText(image, num,
+                        (cx - ts[0] // 2, cy + ts[1] // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 30, 30), 2, cv2.LINE_AA)
+
+            # Label below marker
+            cat1, cat2 = issue['categories']
+            label = f"{cat1}<>{cat2} {issue['wcag_ratio']:.1f}:1"
+            label_y = cy + 32
+            if label_y > h - 10:
+                label_y = cy - 26
+            self._draw_text_outlined(image, label, (cx - 50, label_y),
+                                     0.42, (255, 255, 255), 1)
+
+    def _draw_statistics_banner(self, canvas_w, stats):
+        """Return an 80-px-tall dark banner with metric blocks."""
+        banner_h = 80
+        banner = np.full((banner_h, canvas_w, 3), 35, dtype=np.uint8)
+
+        metrics = [
+            ("CRITICAL", stats.get('critical_issues', 0), (220, 20, 60)),
+            ("HIGH", stats.get('high_priority_issues', 0), (255, 140, 0)),
+            ("MEDIUM", stats.get('medium_priority_issues', 0), (255, 215, 0)),
+            ("PAIRS", stats.get('analyzed_pairs', 0), (100, 220, 100)),
+        ]
+        spacing = canvas_w // len(metrics)
+
+        for i, (label, value, color) in enumerate(metrics):
+            cx = spacing * i + spacing // 2
+            # Large number
+            val_str = str(value)
+            ts = cv2.getTextSize(val_str, cv2.FONT_HERSHEY_SIMPLEX, 1.3, 3)[0]
+            cv2.putText(banner, val_str, (cx - ts[0] // 2, 48),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.3, color, 3, cv2.LINE_AA)
+            # Small label
+            ts2 = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+            cv2.putText(banner, label, (cx - ts2[0] // 2, 68),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA)
+
+        # Title on the left
+        cv2.putText(banner, "CONTRAST ANALYSIS", (15, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1, cv2.LINE_AA)
+
+        return banner
+
+    def _draw_color_swatches(self, panel_h, issues, max_swatches=5):
+        """Return a 300-px-wide right-side panel with color swatch comparisons."""
+        panel_w = 300
+        panel = np.full((panel_h, panel_w, 3), 42, dtype=np.uint8)
+
+        # Panel title
+        cv2.putText(panel, "Top Issues", (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.line(panel, (15, 38), (panel_w - 15, 38), (80, 80, 80), 1)
+
+        y_offset = 55
+        row_h = (panel_h - 70) // max(max_swatches, 1)
+        row_h = min(row_h, 120)
+
+        for idx, issue in enumerate(issues[:max_swatches], 1):
+            c1 = tuple(int(v) for v in issue['colors'][0])
+            c2 = tuple(int(v) for v in issue['colors'][1])
+            sev_color = self.SEVERITY_COLORS.get(issue['severity'], (200, 200, 200))
+
+            # Issue number + severity dot
+            cv2.circle(panel, (20, y_offset + 10), 8, sev_color, -1, cv2.LINE_AA)
+            cv2.putText(panel, str(idx), (16, y_offset + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+
+            # Color swatch 1
+            sw = 36
+            sx1 = 40
+            cv2.rectangle(panel, (sx1, y_offset), (sx1 + sw, y_offset + sw), c1, -1)
+            cv2.rectangle(panel, (sx1, y_offset), (sx1 + sw, y_offset + sw), (120, 120, 120), 1)
+
+            # "vs" text
+            cv2.putText(panel, "vs", (sx1 + sw + 4, y_offset + sw // 2 + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1, cv2.LINE_AA)
+
+            # Color swatch 2
+            sx2 = sx1 + sw + 28
+            cv2.rectangle(panel, (sx2, y_offset), (sx2 + sw, y_offset + sw), c2, -1)
+            cv2.rectangle(panel, (sx2, y_offset), (sx2 + sw, y_offset + sw), (120, 120, 120), 1)
+
+            # WCAG ratio + PASS/FAIL
+            ratio_x = sx2 + sw + 12
+            ratio_str = f"{issue['wcag_ratio']:.1f}:1"
+            cv2.putText(panel, ratio_str, (ratio_x, y_offset + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+            if issue['wcag_ratio'] < 4.5:
+                cv2.putText(panel, "FAIL", (ratio_x, y_offset + 34),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 60, 60), 1, cv2.LINE_AA)
+            else:
+                cv2.putText(panel, "PASS", (ratio_x, y_offset + 34),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (60, 200, 60), 1, cv2.LINE_AA)
+
+            # Category labels
+            cat1 = issue['categories'][0][:10]
+            cat2 = issue['categories'][1][:10]
+            cv2.putText(panel, cat1, (sx1, y_offset + sw + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (170, 170, 170), 1, cv2.LINE_AA)
+            cv2.putText(panel, cat2, (sx2, y_offset + sw + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (170, 170, 170), 1, cv2.LINE_AA)
+
+            y_offset += row_h
+
+        return panel
+
+    def _draw_legend(self, image):
+        """Draw a severity legend panel in the bottom-right corner."""
+        h, w = image.shape[:2]
+        lw, lh = 235, 170
+        lx = w - lw - 15
+        ly = h - lh - 15
+
+        # Semi-transparent background
         overlay = image.copy()
-        overlay[dilated > 0] = color
-        cv2.addWeighted(overlay, 0.5, image, 0.5, 0, image)
-        
-        return image
+        cv2.rectangle(overlay, (lx, ly), (lx + lw, ly + lh), (255, 255, 255), -1)
+        cv2.addWeighted(overlay, 0.82, image, 0.18, 0, image)
+        cv2.rectangle(image, (lx, ly), (lx + lw, ly + lh), (60, 60, 60), 2)
+
+        # Title
+        cv2.putText(image, "Contrast Severity", (lx + 10, ly + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (30, 30, 30), 1, cv2.LINE_AA)
+        cv2.line(image, (lx + 10, ly + 28), (lx + lw - 10, ly + 28), (180, 180, 180), 1)
+
+        levels = [
+            ("CRITICAL", (220, 20, 60), "< 7.0:1 (stairs/doors)"),
+            ("HIGH", (255, 140, 0), "< 4.5:1 (furniture)"),
+            ("MEDIUM", (255, 215, 0), "< 3.0:1 (standard)"),
+            ("PASS", (50, 180, 50), ">= threshold"),
+        ]
+
+        y = ly + 50
+        for label, color, desc in levels:
+            cv2.rectangle(image, (lx + 12, y - 10), (lx + 30, y + 5), color, -1)
+            cv2.rectangle(image, (lx + 12, y - 10), (lx + 30, y + 5), (60, 60, 60), 1)
+            cv2.putText(image, label, (lx + 38, y + 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (30, 30, 30), 1, cv2.LINE_AA)
+            cv2.putText(image, desc, (lx + 12, y + 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (100, 100, 100), 1, cv2.LINE_AA)
+            y += 32
+
+        # Footer
+        cv2.putText(image, "WCAG 2.1 Level AA", (lx + 10, ly + lh - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (80, 80, 80), 1, cv2.LINE_AA)
+
+    def _create_enhanced_visualization(self, image, issues, stats):
+        """Compose the full annotated contrast visualization."""
+        img_h, img_w = image.shape[:2]
+        panel_w = 300 if issues else 0
+        banner_h = 80
+        canvas_w = img_w + panel_w
+        canvas_h = banner_h + img_h
+
+        # -- Statistics banner --
+        banner = self._draw_statistics_banner(canvas_w, stats)
+
+        # -- Annotated image --
+        annotated = image.copy()
+        # Draw glow boundaries
+        for issue in issues:
+            self._draw_boundary_glow(annotated, issue['boundary_mask'], issue['severity'])
+        # Draw numbered markers
+        self._draw_issue_markers(annotated, issues)
+        # Draw legend
+        if issues:
+            self._draw_legend(annotated)
+
+        # -- Color swatch panel --
+        if issues:
+            swatch_panel = self._draw_color_swatches(img_h, issues)
+        else:
+            swatch_panel = None
+
+        # -- Assemble canvas --
+        canvas = np.full((canvas_h, canvas_w, 3), 42, dtype=np.uint8)
+        canvas[0:banner_h, 0:canvas_w] = banner
+        canvas[banner_h:banner_h + img_h, 0:img_w] = annotated
+        if swatch_panel is not None:
+            canvas[banner_h:banner_h + img_h, img_w:img_w + panel_w] = swatch_panel
+
+        return canvas
     
     def generate_report(self, results: Dict) -> str:
         """Generate a detailed text report of contrast analysis"""
