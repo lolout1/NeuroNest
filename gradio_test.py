@@ -82,6 +82,7 @@ DISPLAY_MAX_WIDTH = 1920
 DISPLAY_MAX_HEIGHT = 1080
 
 from universal_contrast_analyzer import UniversalContrastAnalyzer
+from xai_analyzer import XAIAnalyzer
 
 def resize_image_for_processing(image: np.ndarray, target_size: int = 640, max_size: int = 2560) -> Tuple[np.ndarray, float]:
     h, w = image.shape[:2]
@@ -381,6 +382,7 @@ class NeuroNestApp:
         self.segmenter = EoMTSegmenter()
         self.blackspot_detector = None
         self.contrast_analyzer = UniversalContrastAnalyzer(wcag_threshold=4.5)
+        self.xai_analyzer = None
         self.initialized = False
 
     def initialize(self):
@@ -392,6 +394,15 @@ class NeuroNestApp:
             blackspot_success = self.blackspot_detector.initialize()
         except Exception as e:
             logger.warning(f"Could not initialize blackspot detector: {e}")
+        if seg_success:
+            self.xai_analyzer = XAIAnalyzer(
+                eomt_model=self.segmenter.model,
+                eomt_processor=self.segmenter.processor,
+                blackspot_predictor=(
+                    self.blackspot_detector.predictor
+                    if self.blackspot_detector else None
+                ),
+            )
         self.initialized = seg_success
         return seg_success, blackspot_success
 
@@ -614,7 +625,84 @@ def create_gradio_interface():
             report.append("\n✅ **Excellent!** This environment appears well-optimized for individuals with Alzheimer's.")
             report.append("No significant visual hazards detected.")
         return "\n".join(report)
-    
+
+    # ------------------------------------------------------------------
+    # XAI wrapper
+    # ------------------------------------------------------------------
+    def xai_wrapper(image_path, method, layer, head_choice, target_class):
+        """Run XAI analysis and return 7 visualizations + report."""
+        if image_path is None:
+            return [None] * 7 + ["Please upload an image."]
+        if app.xai_analyzer is None:
+            return [None] * 7 + ["XAI analyzer not initialized."]
+
+        try:
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if image is None:
+                return [None] * 7 + ["Could not load image."]
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            # Parse controls
+            layer_idx = int(layer)
+            head_idx = None if head_choice == "Mean (all heads)" else int(head_choice.split()[-1])
+            class_id = None if target_class == "Auto (dominant)" else int(target_class.split(":")[0])
+
+            # Initialize outputs
+            outputs = [None] * 7
+            report_text = ""
+
+            if method == "Full Suite":
+                results = app.xai_analyzer.run_full_analysis(
+                    image_rgb, layer=layer_idx, head=head_idx,
+                    target_class_id=class_id,
+                )
+                key_order = ["attention", "rollout", "gradcam", "entropy", "pca", "saliency", "chefer"]
+                for i, key in enumerate(key_order):
+                    r = results.get(key, {})
+                    vis = r.get("visualization")
+                    if vis is not None:
+                        outputs[i] = prepare_display_image(vis)
+                report_text = results.get("report", {}).get("report", "")
+                # Append individual method reports
+                for key in key_order:
+                    r = results.get(key, {})
+                    if r.get("report"):
+                        report_text += f"\n\n**{key.title()}**: {r['report']}"
+
+                # Release FP32 model after full suite
+                app.xai_analyzer.cleanup_fp32()
+
+            else:
+                method_map = {
+                    "Self-Attention": ("self_attention_maps", {"layer": layer_idx, "head": head_idx}, 0),
+                    "Attention Rollout": ("attention_rollout", {}, 1),
+                    "GradCAM": ("gradcam_segmentation", {"target_class_id": class_id}, 2),
+                    "Predictive Entropy": ("predictive_entropy", {}, 3),
+                    "Feature PCA": ("feature_pca", {"layer": layer_idx}, 4),
+                    "Class Saliency": ("class_saliency", {"target_class_id": class_id}, 5),
+                    "Chefer Relevancy": ("chefer_relevancy", {"target_class_id": class_id}, 6),
+                }
+                if method in method_map:
+                    func_name, kwargs, idx = method_map[method]
+                    func = getattr(app.xai_analyzer, func_name)
+                    result = func(image_rgb, **kwargs)
+                    vis = result.get("visualization")
+                    if vis is not None:
+                        outputs[idx] = prepare_display_image(vis)
+                    report_text = result.get("report", "")
+
+                    # Release FP32 if gradient method was used
+                    if method in ("GradCAM", "Class Saliency", "Chefer Relevancy"):
+                        app.xai_analyzer.cleanup_fp32()
+
+            return outputs + [report_text]
+
+        except Exception as e:
+            logger.error(f"XAI analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+            return [None] * 7 + [f"Error: {str(e)}"]
+
     title = "🧠 NeuroNest: Production ML System for Alzheimer's Care Environment Analysis"
     description = """
     <div style="line-height: 1.8; font-size: 15px;">
@@ -928,6 +1016,36 @@ def create_gradio_interface():
             .sample-section { background: linear-gradient(135deg, #22272e 0%, #1c2128 100%); }
             .report-box { background: #1c2128; border-color: #373e47; }
         }
+
+        /* XAI Tab Styles */
+        .xai-controls {
+            padding: clamp(15px, 3vw, 25px);
+            background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%);
+            border-radius: clamp(8px, 1.5vw, 12px);
+            border: 1px solid #c5d0e6;
+            margin-bottom: clamp(15px, 3vw, 25px);
+        }
+
+        .xai-panel img {
+            border-radius: 8px;
+            border: 2px solid #e1e4e8;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .xai-report {
+            max-width: min(1200px, 100%);
+            margin: clamp(15px, 3vw, 25px) auto;
+            padding: clamp(15px, 3vw, 25px);
+            background: #f8f9ff;
+            border-radius: clamp(8px, 1.5vw, 12px);
+            border: 2px solid #c5d0e6;
+            line-height: 1.8;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .xai-controls { background: linear-gradient(135deg, #1a1f2e 0%, #141928 100%); border-color: #2d3555; }
+            .xai-report { background: #1a1f2e; border-color: #2d3555; }
+        }
     """, theme=gr.themes.Base()) as interface:
         with gr.Column(elem_classes="container"):
             gr.Markdown(f"# {title}")
@@ -949,137 +1067,229 @@ def create_gradio_interface():
             gr.Markdown(description)
             if not blackspot_ok:
                 gr.Markdown("""
-                ⚠️ **Note:** Blackspot detection model not available. 
+                ⚠️ **Note:** Blackspot detection model not available.
                 To enable blackspot detection, upload the model to HuggingFace or ensure it's in the local directory.
                 """)
-            
-            # First create a hidden image input that will be used by Examples
-            with gr.Row(visible=False):
-                image_input = gr.Image(
-                    label="📸 Upload Room Image",
-                    type="filepath",
-                    height=500
-                )
-            
-            # Sample images section at the top with the actual clickable examples
-            with gr.Column(elem_classes="sample-section"):
-                gr.Markdown("### 🖼️ Try Sample Images")
-                gr.Markdown("*Click any image below to load it for analysis or upload your own. || Then scroll down and click analyze environment*")
-                gr.Markdown("⏱️ **Note:** We use free-tier CPU inferencing, so processing can take up to a few minutes. Please be patient or feel free to [donate](https://github.com/sponsors) to support faster GPU processing! 💙")
-                
-                if sample_images_available:
-                    gr.Examples(
-                        examples=SAMPLE_IMAGES,
-                        inputs=image_input,
-                        label="",
-                        examples_per_page=3
-                    )
-                else:
-                    gr.Markdown("*Sample images not found in samples/ directory*")
-            
-            with gr.Row(elem_classes="controls-row"):
-                with gr.Column(scale=1):
-                    enable_blackspot = gr.Checkbox(
-                        value=blackspot_ok,
-                        label="Enable Floor Blackspot Detection",
-                        interactive=blackspot_ok
-                    )
-                    blackspot_threshold = gr.Slider(
-                        minimum=0.1,
-                        maximum=0.9,
-                        value=0.5,
-                        step=0.05,
-                        label="Blackspot Sensitivity",
-                        visible=blackspot_ok
-                    )
-                with gr.Column(scale=1):
-                    enable_contrast = gr.Checkbox(
-                        value=True,
-                        label="Enable Universal Contrast Analysis"
-                    )
-                    contrast_threshold = gr.Slider(
-                        minimum=3.0,
-                        maximum=7.0,
-                        value=4.5,
-                        step=0.1,
-                        label="WCAG Contrast Threshold"
-                    )
-            
-            # Demo section anchor for scroll navigation
-            gr.HTML('<div id="demo-section"></div>')
 
-            with gr.Row():
-                with gr.Column(scale=2):
-                    # Now show the actual visible image input
-                    image_input_display = gr.Image(
-                        label="📸 Upload Room Image",
-                        type="filepath",
-                        height=500
+            with gr.Tabs():
+                # ============================================================
+                # TAB 1: Main Analysis
+                # ============================================================
+                with gr.TabItem("Analysis"):
+                    # First create a hidden image input that will be used by Examples
+                    with gr.Row(visible=False):
+                        image_input = gr.Image(
+                            label="📸 Upload Room Image",
+                            type="filepath",
+                            height=500
+                        )
+
+                    # Sample images section at the top with the actual clickable examples
+                    with gr.Column(elem_classes="sample-section"):
+                        gr.Markdown("### 🖼️ Try Sample Images")
+                        gr.Markdown("*Click any image below to load it for analysis or upload your own. || Then scroll down and click analyze environment*")
+                        gr.Markdown("⏱️ **Note:** We use free-tier CPU inferencing, so processing can take up to a few minutes. Please be patient or feel free to [donate](https://github.com/sponsors) to support faster GPU processing! 💙")
+
+                        if sample_images_available:
+                            gr.Examples(
+                                examples=SAMPLE_IMAGES,
+                                inputs=image_input,
+                                label="",
+                                examples_per_page=3
+                            )
+                        else:
+                            gr.Markdown("*Sample images not found in samples/ directory*")
+
+                    with gr.Row(elem_classes="controls-row"):
+                        with gr.Column(scale=1):
+                            enable_blackspot = gr.Checkbox(
+                                value=blackspot_ok,
+                                label="Enable Floor Blackspot Detection",
+                                interactive=blackspot_ok
+                            )
+                            blackspot_threshold = gr.Slider(
+                                minimum=0.1,
+                                maximum=0.9,
+                                value=0.5,
+                                step=0.05,
+                                label="Blackspot Sensitivity",
+                                visible=blackspot_ok
+                            )
+                        with gr.Column(scale=1):
+                            enable_contrast = gr.Checkbox(
+                                value=True,
+                                label="Enable Universal Contrast Analysis"
+                            )
+                            contrast_threshold = gr.Slider(
+                                minimum=3.0,
+                                maximum=7.0,
+                                value=4.5,
+                                step=0.1,
+                                label="WCAG Contrast Threshold"
+                            )
+
+                    # Demo section anchor for scroll navigation
+                    gr.HTML('<div id="demo-section"></div>')
+
+                    with gr.Row():
+                        with gr.Column(scale=2):
+                            # Now show the actual visible image input
+                            image_input_display = gr.Image(
+                                label="📸 Upload Room Image",
+                                type="filepath",
+                                height=500
+                            )
+                            # Connect the hidden input to the visible one
+                            image_input.change(
+                                fn=lambda x: x,
+                                inputs=image_input,
+                                outputs=image_input_display
+                            )
+                        with gr.Column(scale=1):
+                            analyze_button = gr.Button(
+                                "🔍 Analyze Environment",
+                                variant="primary",
+                                elem_classes="main-button"
+                            )
+
+                    gr.Markdown("---")
+                    gr.Markdown("## 🎯 Segmented Objects")
+                    seg_display = gr.Image(
+                        label=None,
+                        interactive=False,
+                        show_label=False,
+                        elem_classes="image-output"
                     )
-                    # Connect the hidden input to the visible one
-                    image_input.change(
-                        fn=lambda x: x,
-                        inputs=image_input,
-                        outputs=image_input_display
+                    if blackspot_ok:
+                        gr.Markdown("## ⚫ Blackspot Detection")
+                        blackspot_display = gr.Image(
+                            label=None,
+                            interactive=False,
+                            show_label=False,
+                            elem_classes="image-output"
+                        )
+                    else:
+                        blackspot_display = gr.Image(visible=False)
+                    gr.Markdown("## 🎨 Contrast Analysis")
+                    contrast_display = gr.Image(
+                        label=None,
+                        interactive=False,
+                        show_label=False,
+                        elem_classes="image-output"
                     )
-                with gr.Column(scale=1):
-                    analyze_button = gr.Button(
-                        "🔍 Analyze Environment",
-                        variant="primary",
-                        elem_classes="main-button"
+                    gr.Markdown("---")
+                    analysis_report = gr.Markdown(
+                        value="Upload an image and click 'Analyze Environment' to begin.",
+                        elem_classes="report-box"
                     )
-            
-            gr.Markdown("---")
-            gr.Markdown("## 🎯 Segmented Objects")
-            seg_display = gr.Image(
-                label=None,
-                interactive=False,
-                show_label=False,
-                elem_classes="image-output"
-            )
-            if blackspot_ok:
-                gr.Markdown("## ⚫ Blackspot Detection")
-                blackspot_display = gr.Image(
-                    label=None,
-                    interactive=False,
-                    show_label=False,
-                    elem_classes="image-output"
-                )
-            else:
-                blackspot_display = gr.Image(visible=False)
-            gr.Markdown("## 🎨 Contrast Analysis")
-            contrast_display = gr.Image(
-                label=None,
-                interactive=False,
-                show_label=False,
-                elem_classes="image-output"
-            )
-            gr.Markdown("---")
-            analysis_report = gr.Markdown(
-                value="Upload an image and click 'Analyze Environment' to begin.",
-                elem_classes="report-box"
-            )
-            
-            # Use image_input_display for the analysis
-            analyze_button.click(
-                fn=analyze_wrapper,
-                inputs=[
-                    image_input_display,
-                    blackspot_threshold,
-                    contrast_threshold,
-                    enable_blackspot,
-                    enable_contrast
-                ],
-                outputs=[
-                    seg_display,
-                    blackspot_display,
-                    contrast_display,
-                    analysis_report
-                ]
-            )
+
+                    # Use image_input_display for the analysis
+                    analyze_button.click(
+                        fn=analyze_wrapper,
+                        inputs=[
+                            image_input_display,
+                            blackspot_threshold,
+                            contrast_threshold,
+                            enable_blackspot,
+                            enable_contrast
+                        ],
+                        outputs=[
+                            seg_display,
+                            blackspot_display,
+                            contrast_display,
+                            analysis_report
+                        ]
+                    )
+
+                # ============================================================
+                # TAB 2: Explainable AI
+                # ============================================================
+                with gr.TabItem("Explainable AI"):
+                    gr.Markdown("## Explainable AI (XAI) Visualization Suite")
+                    gr.Markdown(
+                        "Interpret the DINOv3-EoMT Vision Transformer's decisions using "
+                        "7 research-grade XAI methods. Understand *what* the model sees and *why*."
+                    )
+
+                    with gr.Row(elem_classes="xai-controls"):
+                        with gr.Column(scale=2):
+                            xai_image_input = gr.Image(
+                                label="Upload Image",
+                                type="filepath",
+                                height=350,
+                            )
+                        with gr.Column(scale=1):
+                            xai_method = gr.Radio(
+                                choices=[
+                                    "Full Suite",
+                                    "Self-Attention",
+                                    "Attention Rollout",
+                                    "GradCAM",
+                                    "Predictive Entropy",
+                                    "Feature PCA",
+                                    "Class Saliency",
+                                    "Chefer Relevancy",
+                                ],
+                                value="Full Suite",
+                                label="XAI Method",
+                            )
+                            xai_layer = gr.Slider(
+                                minimum=0,
+                                maximum=23,
+                                value=23,
+                                step=1,
+                                label="Transformer Layer (0-23)",
+                            )
+                            xai_head = gr.Dropdown(
+                                choices=["Mean (all heads)"] + [f"Head {i}" for i in range(16)],
+                                value="Mean (all heads)",
+                                label="Attention Head",
+                            )
+                            xai_class = gr.Dropdown(
+                                choices=["Auto (dominant)"] + [
+                                    f"{i}: {ADE20K_NAMES[i].split(',')[0]}"
+                                    for i in range(len(ADE20K_NAMES))
+                                ],
+                                value="Auto (dominant)",
+                                label="Target Class",
+                            )
+                            xai_button = gr.Button(
+                                "Run XAI Analysis",
+                                variant="primary",
+                                elem_classes="main-button",
+                            )
+
+                    # Output gallery: 4 + 3 grid
+                    gr.Markdown("### Visualizations")
+                    with gr.Row():
+                        xai_attn = gr.Image(label="Self-Attention", interactive=False, elem_classes="xai-panel")
+                        xai_rollout = gr.Image(label="Attention Rollout", interactive=False, elem_classes="xai-panel")
+                        xai_gradcam = gr.Image(label="GradCAM", interactive=False, elem_classes="xai-panel")
+                        xai_entropy = gr.Image(label="Predictive Entropy", interactive=False, elem_classes="xai-panel")
+                    with gr.Row():
+                        xai_pca = gr.Image(label="Feature PCA", interactive=False, elem_classes="xai-panel")
+                        xai_saliency = gr.Image(label="Class Saliency", interactive=False, elem_classes="xai-panel")
+                        xai_chefer = gr.Image(label="Chefer Relevancy", interactive=False, elem_classes="xai-panel")
+
+                    gr.Markdown("### Analysis Report")
+                    xai_report = gr.Markdown(
+                        value="Select a method and click 'Run XAI Analysis' to begin.",
+                        elem_classes="xai-report",
+                    )
+
+                    xai_button.click(
+                        fn=xai_wrapper,
+                        inputs=[xai_image_input, xai_method, xai_layer, xai_head, xai_class],
+                        outputs=[
+                            xai_attn, xai_rollout, xai_gradcam, xai_entropy,
+                            xai_pca, xai_saliency, xai_chefer,
+                            xai_report,
+                        ],
+                    )
+
             gr.Markdown("""
                 ---
-                **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection and universal contrast analysis  
+                **NeuroNest** v2.0 - Enhanced with floor-only blackspot detection, universal contrast analysis, and Explainable AI
                 *Creating safer environments for cognitive health through AI*
                 """)
     return interface
