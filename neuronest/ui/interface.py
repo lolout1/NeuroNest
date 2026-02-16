@@ -12,6 +12,7 @@ from ..pipeline import NeuroNestApp
 from ..xai import XAIAnalyzer
 from ..xai.renderer import render_notebook_html, render_defect_notebook_html
 from .css import MAIN_CSS
+from ..agent import create_chat_handler
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def create_gradio_interface():
 
     def analyze_wrapper(image_path, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast):
         if image_path is None:
-            return None, None, None, "Please upload an image"
+            return None, None, None, "Please upload an image", {}
         results = app.analyze_image(
             image_path=image_path,
             blackspot_threshold=blackspot_threshold,
@@ -45,7 +46,7 @@ def create_gradio_interface():
             enable_contrast=enable_contrast,
         )
         if "error" in results:
-            return None, None, None, f"Error: {results['error']}"
+            return None, None, None, f"Error: {results['error']}", {}
         seg_output = results["segmentation"]["visualization"] if results["segmentation"] else None
         blackspot_output = results["blackspot"]["visualization"] if results["blackspot"] else None
         contrast_output = results["contrast"]["visualization"] if results["contrast"] else None
@@ -67,7 +68,7 @@ def create_gradio_interface():
             )
 
         report = _comprehensive_report(results, contrast_report, blackspot_report)
-        return seg_output, blackspot_output, contrast_output, report
+        return seg_output, blackspot_output, contrast_output, report, results
 
     def xai_wrapper(image_path, method, layer, head_choice, target_class, progress=gr.Progress(track_tqdm=True)):
         if image_path is None:
@@ -248,6 +249,8 @@ def create_gradio_interface():
         css=MAIN_CSS,
         theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="blue", neutral_hue="slate"),
     ) as interface:
+        analysis_state = gr.State(value={})
+
         with gr.Column(elem_classes="container"):
             gr.HTML(_HERO_HTML)
 
@@ -257,11 +260,13 @@ def create_gradio_interface():
                 _build_demo_tab(
                     app, analyze_wrapper, SAMPLE_IMAGES,
                     sample_images_available, blackspot_ok,
+                    analysis_state,
                 )
                 _build_xai_tab(
                     xai_wrapper, defect_xai_wrapper, load_sample_gallery,
                     SAMPLE_IMAGES, sample_images_available,
                 )
+                _build_chat_tab(analysis_state)
                 _build_technical_tab()
 
     return interface
@@ -357,7 +362,7 @@ def _build_team_tab():
 """)
 
 
-def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, blackspot_ok):
+def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, blackspot_ok, analysis_state):
     with gr.TabItem("Live Demo"):
         gr.Markdown("Upload a room image to detect visual hazards for Alzheimer's patients.")
 
@@ -399,7 +404,7 @@ def _build_demo_tab(app, analyze_wrapper, sample_images, sample_available, black
         analyze_button.click(
             fn=analyze_wrapper,
             inputs=[image_input_display, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast],
-            outputs=[seg_display, blackspot_display, contrast_display, analysis_report],
+            outputs=[seg_display, blackspot_display, contrast_display, analysis_report, analysis_state],
         )
 
 
@@ -504,6 +509,67 @@ Run Full Suite on any sample image — results are cached and displayed here aut
                 )
                 gallery_btn = gr.Button("Refresh Gallery", variant="secondary")
                 gallery_btn.click(fn=load_sample_gallery, outputs=[gallery_html])
+
+
+def _build_chat_tab(analysis_state):
+    with gr.TabItem("AI Assistant"):
+        gr.Markdown(
+            "Ask questions about the analysis results. "
+            "Run an analysis in the **Live Demo** tab first for context-aware responses."
+        )
+
+        chatbot = gr.Chatbot(
+            value=[],
+            height=480,
+            type="messages",
+            placeholder="Analysis-aware AI assistant. Ask about hazards, safety, or recommendations.",
+        )
+
+        state_ref = {"value": analysis_state}
+
+        def _get_state():
+            return state_ref["value"]
+
+        chat_handler = create_chat_handler(_get_state)
+
+        def _respond(message, history, current_state):
+            state_ref["value"] = current_state
+            response = chat_handler(message, history)
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": response})
+            return history, ""
+
+        with gr.Row():
+            chat_input = gr.Textbox(
+                placeholder="Ask about the analysis results...",
+                show_label=False,
+                scale=4,
+                container=False,
+            )
+            send_btn = gr.Button("Send", variant="primary", scale=1, min_width=80)
+
+        gr.Examples(
+            examples=[
+                "What hazards did you find in this image?",
+                "Is the floor safe for someone with Alzheimer's?",
+                "What should I fix first?",
+                "Explain the blackspot detection results",
+                "How does the contrast analysis work?",
+            ],
+            inputs=chat_input,
+            label="Example questions",
+        )
+
+        send_btn.click(
+            fn=_respond,
+            inputs=[chat_input, chatbot, analysis_state],
+            outputs=[chatbot, chat_input],
+        )
+        chat_input.submit(
+            fn=_respond,
+            inputs=[chat_input, chatbot, analysis_state],
+            outputs=[chatbot, chat_input],
+        )
 
 
 def _build_technical_tab():
