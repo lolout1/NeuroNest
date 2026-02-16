@@ -6,6 +6,7 @@ import logging
 from typing import Dict
 from concurrent.futures import ThreadPoolExecutor
 
+from .config import OUTDOOR_CLASS_IDS
 from .models import EoMTSegmenter, ImprovedBlackspotDetector
 from .utils import prepare_display_image
 from universal_contrast_analyzer import UniversalContrastAnalyzer
@@ -124,9 +125,10 @@ class NeuroNestApp:
     def _generate_statistics(self, results: Dict) -> Dict:
         stats = {}
         if results["segmentation"]:
-            unique_classes = np.unique(results["segmentation"]["mask"])
+            unique_classes = set(np.unique(results["segmentation"]["mask"]).tolist())
+            indoor_classes = unique_classes - OUTDOOR_CLASS_IDS
             stats["segmentation"] = {
-                "num_classes": len(unique_classes),
+                "num_classes": len(indoor_classes),
                 "image_size": results["segmentation"]["mask"].shape,
             }
         if results["blackspot"]:

@@ -5,6 +5,7 @@ import time
 import logging
 
 from ade20k_classes import ADE20K_NAMES
+from ..config import OUTDOOR_CLASS_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,11 @@ class ReportMixin:
             gc.collect()
 
         oh, ow = seg_mask.shape[:2]
-        cls, cnt = np.unique(seg_mask, return_counts=True)
+        cls_all, cnt_all = np.unique(seg_mask, return_counts=True)
+        # Filter to indoor classes only
+        indoor_mask = np.array([int(c) not in OUTDOOR_CLASS_IDS for c in cls_all])
+        cls = cls_all[indoor_mask]
+        cnt = cnt_all[indoor_mask]
         total = seg_mask.size
         info = sorted(zip(cls, cnt), key=lambda x: -x[1])
 
@@ -69,7 +74,7 @@ class ReportMixin:
         # Scene composition
         lines += [
             "## 1. Scene Composition & Object Distribution",
-            f"The model identified **{len(cls)} semantic categories** in this scene, "
+            f"The model identified **{len(cls)} indoor semantic categories** in this scene, "
             f"processed through {self._n_encoder} encoder layers and "
             f"{self._num_layers - self._n_encoder} decoder layers.\n",
         ]

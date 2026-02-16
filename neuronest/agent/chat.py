@@ -4,6 +4,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
+from ..config import OUTDOOR_CLASS_IDS
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -62,14 +64,19 @@ class AnalysisContext:
 
     def _serialize_segmentation(self) -> str:
         seg_stats = self.statistics.get("segmentation", {})
-        num_classes = seg_stats.get("num_classes", 0)
         image_size = seg_stats.get("image_size", "unknown")
-        lines = [
-            f"[SEGMENTATION] {num_classes} classes detected | Resolution: {image_size}",
-        ]
         mask = self.segmentation.get("mask")
         if mask is not None:
+            indoor_count = len(set(np.unique(mask).tolist()) - OUTDOOR_CLASS_IDS)
+            lines = [
+                f"[SEGMENTATION] {indoor_count} indoor classes detected | Resolution: {image_size}",
+            ]
             lines.extend(self._class_distribution(mask))
+        else:
+            num_classes = seg_stats.get("num_classes", 0)
+            lines = [
+                f"[SEGMENTATION] {num_classes} classes detected | Resolution: {image_size}",
+            ]
         return "\n".join(lines)
 
     def _class_distribution(self, mask: np.ndarray) -> List[str]:
@@ -81,9 +88,15 @@ class AnalysisContext:
         unique, counts = np.unique(mask, return_counts=True)
         total = mask.size
         sorted_idx = np.argsort(-counts)
-        lines = ["Top classes by pixel coverage:"]
-        for rank, idx in enumerate(sorted_idx[:15], 1):
+        lines = ["Top indoor classes by pixel coverage:"]
+        rank = 0
+        for idx in sorted_idx:
             cls_id = int(unique[idx])
+            if cls_id in OUTDOOR_CLASS_IDS:
+                continue
+            rank += 1
+            if rank > 15:
+                break
             pix = int(counts[idx])
             pct = pix / total * 100
             name = ADE20K_NAMES[cls_id] if ADE20K_NAMES and cls_id < len(ADE20K_NAMES) else f"class_{cls_id}"

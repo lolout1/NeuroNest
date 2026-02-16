@@ -621,7 +621,7 @@ def _comprehensive_report(results: Dict, contrast_report: str, blackspot_report:
     if results["segmentation"]:
         stats = results["statistics"].get("segmentation", {})
         report.append("## Object Segmentation")
-        report.append(f"- **Classes detected:** {stats.get('num_classes', 'N/A')}")
+        report.append(f"- **Indoor classes detected:** {stats.get('num_classes', 'N/A')}")
         report.append(f"- **Resolution:** {stats.get('image_size', 'N/A')}")
         report.append("")
 

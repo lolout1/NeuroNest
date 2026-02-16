@@ -6,7 +6,7 @@ from typing import Tuple
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation
 
-from ..config import ENABLE_QUANTIZATION, EOMT_MODEL_ID, FLOOR_CLASSES
+from ..config import ENABLE_QUANTIZATION, EOMT_MODEL_ID, FLOOR_CLASSES, OUTDOOR_CLASS_IDS
 from ..utils import prepare_display_image
 from .quantization import quantize_model_int8
 
@@ -67,11 +67,16 @@ class EoMTSegmenter:
         color_overlay = np.zeros((h, w, 3), dtype=np.uint8)
         for label_id in np.unique(seg_mask):
             if label_id < len(ADE20K_COLORS):
-                color_overlay[seg_mask == label_id] = ADE20K_COLORS[label_id]
+                if label_id in OUTDOOR_CLASS_IDS:
+                    color_overlay[seg_mask == label_id] = [60, 60, 60]
+                else:
+                    color_overlay[seg_mask == label_id] = ADE20K_COLORS[label_id]
         vis = cv2.addWeighted(image, 1 - alpha, color_overlay, alpha, 0)
         labels, areas = np.unique(seg_mask, return_counts=True)
         min_area = h * w * 0.01
         for label_id, area in zip(labels, areas):
+            if label_id in OUTDOOR_CLASS_IDS:
+                continue
             if area >= min_area and label_id < len(ADE20K_NAMES):
                 ys, xs = np.where(seg_mask == label_id)
                 cx, cy = int(np.median(xs)), int(np.median(ys))
