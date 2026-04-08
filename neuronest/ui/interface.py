@@ -818,7 +818,8 @@ def _comprehensive_report(results: Dict) -> str:
                 n = stats.get(key, 0)
                 if n:
                     parts.append(f"{n} {label}")
-            lines.append(f"**{total} issues found** \u2014 {' \u00b7 '.join(parts)}\n")
+            sep = ' \u00b7 '
+            lines.append(f"**{total} issues found** \u2014 {sep.join(parts)}\n")
 
             for severity, heading, req in [
                 ("critical", "Critical", "7.0:1"),
