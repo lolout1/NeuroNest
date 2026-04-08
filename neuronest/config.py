@@ -7,12 +7,11 @@ CPU_DEVICE = torch.device("cpu")
 ENABLE_QUANTIZATION = os.environ.get("NEURONEST_QUANTIZE", "1") == "1"
 
 FLOOR_CLASSES = {
-    "floor": [3, 4, 13],
-    "carpet": [28],
-    "mat": [78],
+    "floor": [3],   # 3: floor
+    "rug": [28],    # 28: rug
 }
 
-FLOOR_CLASS_IDS = [3, 4, 13, 28, 78]
+FLOOR_CLASS_IDS = [3, 28]
 
 # 46 ADE20K classes that are exclusively outdoor (vehicles, terrain, water bodies,
 # outdoor structures, vegetation). These are suppressed in visualization and reports

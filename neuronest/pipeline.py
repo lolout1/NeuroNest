@@ -139,6 +139,7 @@ class NeuroNestApp:
                 "coverage_percentage": bs["coverage_percentage"],
                 "num_detections": bs["num_detections"],
                 "avg_confidence": bs["avg_confidence"],
+                "detections": bs.get("detections", []),
             }
         if results["contrast"]:
             cs = results["contrast"]["statistics"]

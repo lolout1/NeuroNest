@@ -37,7 +37,7 @@ def create_gradio_interface():
 
     def analyze_wrapper(image_path, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast):
         if image_path is None:
-            return None, None, None, "Please upload an image", {}
+            return None, None, None, "Please upload an image.", {}, {}
         results = app.analyze_image(
             image_path=image_path,
             blackspot_threshold=blackspot_threshold,
@@ -46,29 +46,14 @@ def create_gradio_interface():
             enable_contrast=enable_contrast,
         )
         if "error" in results:
-            return None, None, None, f"Error: {results['error']}", {}
+            return None, None, None, f"Error: {results['error']}", {}, {}
         seg_output = results["segmentation"]["visualization"] if results["segmentation"] else None
         blackspot_output = results["blackspot"]["visualization"] if results["blackspot"] else None
         contrast_output = results["contrast"]["visualization"] if results["contrast"] else None
 
-        contrast_report = "Contrast analysis not performed."
-        if results["contrast"]:
-            contrast_report = app.contrast_analyzer.generate_report(results["contrast"])
-
-        blackspot_report = "Blackspot analysis not performed."
-        if results["blackspot"]:
-            bs = results["blackspot"]
-            blackspot_report = (
-                f"**Legend:** Green = detected floor area, Red = blackspot hazards  \n"
-                f"**Floor Area:** {bs['floor_area']:,} pixels  \n"
-                f"**Blackspot Area:** {bs['blackspot_area']:,} pixels  \n"
-                f"**Coverage:** {bs['coverage_percentage']:.2f}%  \n"
-                f"**Detections:** {bs['num_detections']}  \n"
-                f"**Average Confidence:** {bs['avg_confidence']:.2f}"
-            )
-
-        report = _comprehensive_report(results, contrast_report, blackspot_report)
-        return seg_output, blackspot_output, contrast_output, report, results
+        report = _comprehensive_report(results)
+        structured = _build_structured_json(results)
+        return seg_output, blackspot_output, contrast_output, report, structured, results
 
     def _build_xai_summary(results, method_name="Full Suite"):
         METHOD_NAMES = {
@@ -490,6 +475,8 @@ The system identifies visual hazards that cause falls in Alzheimer's patients �
                 )
             with gr.TabItem("Full Report"):
                 analysis_report = gr.Markdown(value="Upload an image and click **Analyze Environment** to begin.", elem_classes="report-box")
+                with gr.Accordion("Structured Data (JSON)", open=False):
+                    structured_json_display = gr.JSON(label="Analysis Data")
                 agent_report_section = gr.HTML(value="", visible=False, elem_classes="report-box")
 
         def auto_xai_wrapper(image_path, enable_xai_flag, current_state, progress=gr.Progress(track_tqdm=True)):
@@ -508,7 +495,7 @@ The system identifies visual hazards that cause falls in Alzheimer's patients �
         analyze_button.click(
             fn=analyze_wrapper,
             inputs=[image_input_display, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast],
-            outputs=[seg_display, blackspot_display, contrast_display, analysis_report, analysis_state],
+            outputs=[seg_display, blackspot_display, contrast_display, analysis_report, structured_json_display, analysis_state],
         ).then(
             fn=auto_xai_wrapper,
             inputs=[image_input_display, enable_xai, analysis_state],
@@ -709,56 +696,176 @@ def _build_technical_tab():
 """)
 
 
-def _comprehensive_report(results: Dict, contrast_report: str, blackspot_report: str) -> str:
-    report = [f"# NeuroNest Analysis Report\n", f"*Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n"]
+def _describe_location(cx, cy, img_w, img_h):
+    """Convert centroid pixel coordinates to a human-readable region name."""
+    v = "upper" if cy < img_h / 3 else ("lower" if cy > img_h * 2 / 3 else "center")
+    h = "left" if cx < img_w / 3 else ("right" if cx > img_w * 2 / 3 else "center")
+    if v == "center" and h == "center":
+        return "center"
+    if v == "center":
+        return h
+    if h == "center":
+        return v
+    return f"{v}-{h}"
 
-    if results["segmentation"]:
-        stats = results["statistics"].get("segmentation", {})
-        report.append("## Object Segmentation")
-        report.append(f"- **Indoor classes detected:** {stats.get('num_classes', 'N/A')}")
-        report.append(f"- **Resolution:** {stats.get('image_size', 'N/A')}")
-        report.append("")
 
-    report.append("## Blackspot Analysis")
-    report.append(blackspot_report)
-    report.append("")
-    report.append("## Universal Contrast Analysis")
-    report.append(contrast_report)
-    report.append("")
-    report.append("## Recommendations for Alzheimer's Care")
+def _build_structured_json(results: Dict) -> Dict:
+    """Build a JSON-serializable structured analysis dict for the API."""
+    data: Dict = {}
 
+    bs = results.get("blackspot")
+    if bs:
+        data["blackspots"] = {
+            "count": bs.get("num_detections", 0),
+            "coverage_pct": round(bs.get("coverage_percentage", 0), 2),
+            "avg_confidence": round(bs.get("avg_confidence", 0), 3),
+            "floor_area_pixels": bs.get("floor_area", 0),
+            "blackspot_area_pixels": bs.get("blackspot_area", 0),
+            "detections": bs.get("detections", []),
+        }
+
+    ct = results.get("contrast")
+    if ct:
+        stats = ct.get("statistics", {})
+        serialized = []
+        for issue in ct.get("issues", []):
+            serialized.append({
+                "severity": issue["severity"],
+                "surfaces": list(issue["categories"]),
+                "wcag_ratio": round(issue["wcag_ratio"], 2),
+                "colors": {
+                    "surface_1": issue["colors"][0],
+                    "surface_2": issue["colors"][1],
+                },
+                "hue_difference": round(issue["hue_difference"], 1),
+                "saturation_difference": int(issue["saturation_difference"]),
+                "boundary_pixels": issue["boundary_pixels"],
+            })
+        data["contrast"] = {
+            "total_issues": stats.get("low_contrast_pairs", 0),
+            "by_severity": {
+                "critical": stats.get("critical_issues", 0),
+                "high": stats.get("high_priority_issues", 0),
+                "medium": stats.get("medium_priority_issues", 0),
+            },
+            "issues": serialized,
+        }
+
+    return data
+
+
+def _comprehensive_report(results: Dict) -> str:
+    """Build a user-facing markdown safety report from pipeline results."""
+    lines = [
+        f"# NeuroNest Safety Analysis\n",
+        f"*{time.strftime('%Y-%m-%d %H:%M:%S')}*\n",
+    ]
+
+    # ── Scene overview ──
+    if results.get("segmentation"):
+        s = results.get("statistics", {}).get("segmentation", {})
+        lines.append("## Scene Overview\n")
+        lines.append(f"- **Indoor classes detected:** {s.get('num_classes', 'N/A')}")
+        sz = s.get("image_size")
+        if sz:
+            lines.append(f"- **Resolution:** {sz[1]} \u00d7 {sz[0]}")
+        lines.append("")
+
+    # ── Blackspot hazards ──
+    lines.append("---\n")
+    lines.append("## Blackspot Hazards\n")
+    bs = results.get("blackspot")
+    if bs is None:
+        lines.append("*Blackspot detection not available in this deployment.*\n")
+    elif bs["num_detections"] == 0:
+        lines.append("**No blackspot hazards detected.**\n")
+    else:
+        conf_pct = f"{bs['avg_confidence'] * 100:.0f}%"
+        lines.append(
+            f"**{bs['num_detections']} detected** \u00b7 "
+            f"{bs['coverage_percentage']:.1f}% floor coverage \u00b7 "
+            f"{conf_pct} avg confidence\n"
+        )
+        detections = bs.get("detections", [])
+        if detections:
+            img = results.get("original_image")
+            img_h, img_w = img.shape[:2] if img is not None else (1, 1)
+            lines.append("| # | Location | Area | Confidence |")
+            lines.append("|---|----------|------|------------|")
+            for d in detections:
+                cx, cy = d["centroid"]
+                loc = _describe_location(cx, cy, img_w, img_h)
+                area = f"{d['area_pixels']:,} px"
+                conf = f"{d['confidence'] * 100:.0f}%"
+                lines.append(f"| {d['id']} | {loc} | {area} | {conf} |")
+            lines.append("")
+
+    # ── Contrast issues ──
+    lines.append("---\n")
+    lines.append("## Contrast Issues\n")
+    ct = results.get("contrast")
+    if ct is None:
+        lines.append("*Contrast analysis not performed.*\n")
+    else:
+        issues = ct.get("issues", [])
+        stats = ct.get("statistics", {})
+        total = stats.get("low_contrast_pairs", 0)
+        if total == 0:
+            lines.append("**No contrast issues \u2014 environment is well optimized.**\n")
+        else:
+            parts = []
+            for key, label in [("critical_issues", "critical"), ("high_priority_issues", "high"), ("medium_priority_issues", "medium")]:
+                n = stats.get(key, 0)
+                if n:
+                    parts.append(f"{n} {label}")
+            lines.append(f"**{total} issues found** \u2014 {' \u00b7 '.join(parts)}\n")
+
+            for severity, heading, req in [
+                ("critical", "Critical", "7.0:1"),
+                ("high", "High Priority", "4.5:1"),
+                ("medium", "Medium", "3.0:1"),
+            ]:
+                group = [i for i in issues if i["severity"] == severity]
+                if not group:
+                    continue
+                lines.append(f"### {heading} (requires {req})\n")
+                lines.append("| Boundary | Ratio | Color 1 | Color 2 |")
+                lines.append("|----------|-------|---------|---------|")
+                for issue in group:
+                    c1_cat, c2_cat = issue["categories"]
+                    ratio = f"{issue['wcag_ratio']:.1f}:1"
+                    col1 = issue["colors"][0]
+                    col2 = issue["colors"][1]
+                    c1_str = f"{col1['name']} `{col1['hex']}`"
+                    c2_str = f"{col2['name']} `{col2['hex']}`"
+                    lines.append(f"| {c1_cat.title()} \u2194 {c2_cat.title()} | {ratio} | {c1_str} | {c2_str} |")
+                lines.append("")
+
+    # ── Recommendations ──
+    lines.append("---\n")
+    lines.append("## Recommendations\n")
     has_issues = False
-    if results["blackspot"] and results["statistics"]["blackspot"]["coverage_percentage"] > 0:
-        has_issues = True
-        report.append("\n### Blackspot Mitigation:")
-        report.append("- Replace dark flooring materials with lighter alternatives")
-        report.append("- Install additional lighting in affected areas")
-        report.append("- Use light-colored rugs or runners to cover dark spots")
-        report.append("- Add contrasting tape or markers around blackspot perimeters")
 
-    if results["contrast"] and results["statistics"]["contrast"]["low_contrast_pairs"] > 0:
+    if bs and bs.get("num_detections", 0) > 0:
         has_issues = True
-        report.append("\n### Contrast Improvements:")
-        issues = results["contrast"]["issues"]
-        critical = [i for i in issues if i["severity"] == "critical"]
-        high = [i for i in issues if i["severity"] == "high"]
-        if critical:
-            report.append("\n**CRITICAL — Immediate attention required:**")
-            for issue in critical[:3]:
-                c1, c2 = issue["categories"]
-                report.append(f"- {c1.title()} / {c2.title()}: Increase contrast to 7:1 minimum")
-        if high:
-            report.append("\n**HIGH PRIORITY:**")
-            for issue in high[:3]:
-                c1, c2 = issue["categories"]
-                report.append(f"- {c1.title()} / {c2.title()}: Increase contrast to 4.5:1 minimum")
-        report.append("\n**General recommendations:**")
-        report.append("- Paint furniture in colors that contrast with floors/walls")
-        report.append("- Add colored tape or markers to furniture edges")
-        report.append("- Install LED strip lighting under furniture edges")
+        lines.append("### Blackspot Mitigation\n")
+        lines.append("- Replace dark flooring with lighter alternatives")
+        lines.append("- Add lighting in affected areas")
+        lines.append("- Use light-colored rugs to cover dark spots")
+        lines.append("- Add contrasting tape around blackspot perimeters\n")
+
+    if ct and stats.get("low_contrast_pairs", 0) > 0:
+        has_issues = True
+        lines.append("### Contrast Improvements\n")
+        floor_issues = [i for i in ct.get("issues", []) if i.get("is_floor_object")]
+        if floor_issues:
+            lines.append("- Ensure floor-level objects visually contrast with flooring")
+        lines.append("- Paint furniture in colors that contrast with floors and walls")
+        lines.append("- Add colored tape or markers to furniture edges")
+        lines.append("- Install LED strip lighting under furniture edges\n")
 
     if not has_issues:
-        report.append("\nThis environment appears well-optimized for individuals with Alzheimer's.")
-        report.append("No significant visual hazards detected.")
+        lines.append("Environment appears well-optimized for Alzheimer's care.  ")
+        lines.append("No significant visual hazards detected.\n")
 
-    return "\n".join(report)
+    return "\n".join(lines)

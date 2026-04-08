@@ -157,13 +157,21 @@ class ImprovedBlackspotDetector:
             for cls in self.floor_classes:
                 floor_mask |= segmentation == cls
 
-        filtered_blackspot_masks = self.filter_non_floor_blackspots(
-            blackspot_masks, segmentation, floor_mask
-        )
-
+        # Filter to floor-only and collect per-instance metadata
+        detections = []
         combined_blackspot = np.zeros(image.shape[:2], dtype=bool)
-        for mask in filtered_blackspot_masks:
+        for i, mask in enumerate(blackspot_masks):
+            if not self.is_on_floor_surface(mask, segmentation, floor_mask):
+                continue
             combined_blackspot |= mask
+            ys, xs = np.where(mask)
+            score = float(blackspot_scores[i]) if i < len(blackspot_scores) else 0.0
+            detections.append({
+                "id": len(detections) + 1,
+                "centroid": (int(np.median(xs)), int(np.median(ys))),
+                "area_pixels": int(np.sum(mask)),
+                "confidence": round(score, 3),
+            })
 
         visualization = self._create_visualization(image, floor_mask, combined_blackspot)
         visualization_display = prepare_display_image(visualization)
@@ -179,8 +187,12 @@ class ImprovedBlackspotDetector:
             "floor_area": floor_area,
             "blackspot_area": blackspot_area,
             "coverage_percentage": coverage,
-            "num_detections": len(filtered_blackspot_masks),
-            "avg_confidence": float(np.mean(blackspot_scores)) if len(blackspot_scores) > 0 else 0.0,
+            "num_detections": len(detections),
+            "avg_confidence": (
+                float(np.mean([d["confidence"] for d in detections]))
+                if detections else 0.0
+            ),
+            "detections": detections,
         }
 
     def _create_visualization(
@@ -208,4 +220,5 @@ class ImprovedBlackspotDetector:
             "coverage_percentage": 0,
             "num_detections": 0,
             "avg_confidence": 0.0,
+            "detections": [],
         }

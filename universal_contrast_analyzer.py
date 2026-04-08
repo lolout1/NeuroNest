@@ -22,53 +22,122 @@ class UniversalContrastAnalyzer:
     def __init__(self, wcag_threshold: float = 4.5):
         self.wcag_threshold = wcag_threshold
         
-        # Comprehensive ADE20K semantic class mappings
+        # ADE20K semantic class mappings for indoor care environments.
+        # Each ID verified against ade20k_classes.py (0-indexed, 150 classes).
+        # Classes not listed here default to 'unknown' and get standard 3:1 checks.
         self.semantic_classes = {
-            # Floors and ground surfaces
-            'floor': [3, 4, 13, 28, 78],  # floor, wood floor, rug, carpet, mat
-            
-            # Walls and vertical surfaces
-            'wall': [0, 1, 9, 21],  # wall, building, brick, house
-            
-            # Ceiling
-            'ceiling': [5, 16],  # ceiling, sky (for rooms with skylights)
-            
-            # Furniture - expanded list
+            # Floor / walking surfaces (keep in sync with config.FLOOR_CLASS_IDS)
+            'floor': [3, 28],  # 3: floor, 28: rug
+
+            # Vertical room surfaces
+            'wall': [0],  # 0: wall
+
+            # Overhead surfaces
+            'ceiling': [5],  # 5: ceiling
+
+            # Large furnishings on floors / against walls
             'furniture': [
-                10, 19, 15, 7, 18, 23, 30, 33, 34, 36, 44, 45, 57, 63, 64, 65, 75,
-                # sofa, chair, table, bed, armchair, cabinet, desk, counter, stool, 
-                # bench, nightstand, coffee table, ottoman, wardrobe, dresser, shelf, 
-                # chest of drawers
+                7,   # bed
+                10,  # cabinet
+                15,  # table
+                19,  # chair
+                23,  # sofa
+                24,  # shelf
+                30,  # armchair
+                31,  # seat
+                33,  # desk
+                35,  # wardrobe, closet
+                44,  # chest of drawers
+                45,  # counter
+                55,  # case, display case
+                56,  # pool table
+                62,  # bookcase
+                64,  # coffee table
+                69,  # bench
+                73,  # kitchen island
+                75,  # swivel chair
+                77,  # bar
+                97,  # ottoman
+                99,  # buffet, sideboard
+                110, # stool
+                117, # cradle
             ],
-            
+
             # Doors and openings
-            'door': [25, 14, 79],  # door, windowpane, screen door
-            
+            'door': [14, 58],  # 14: door, 58: screen door
+
             # Windows
-            'window': [8, 14],  # window, windowpane
-            
-            # Stairs and steps
-            'stairs': [53, 59],  # stairs, step
-            
-            # Small objects that might be on floors/furniture
+            'window': [8],  # 8: window
+
+            # Stairs, steps, and associated safety elements
+            'stairs': [53, 59, 95, 96, 121],
+            # 53: stairs, 59: stairway, 95: bannister, 96: escalator, 121: step
+
+            # Smaller items — trip hazards, tabletop objects
             'objects': [
-                17, 20, 24, 37, 38, 39, 42, 62, 68, 71, 73, 80, 82, 84, 89, 90, 92, 93,
-                # curtain, book, picture, towel, clothes, pillow, box, bag, lamp, fan, 
-                # cushion, basket, bottle, plate, clock, vase, tray, bowl
+                17,  # plant
+                36,  # lamp
+                39,  # cushion
+                41,  # box
+                57,  # pillow
+                67,  # book
+                74,  # computer
+                81,  # towel
+                89,  # tv
+                92,  # clothes
+                98,  # bottle
+                108, # plaything, toy
+                112, # basket
+                115, # bag
+                119, # ball
+                120, # food
+                125, # pot
+                131, # blanket
+                135, # vase
+                137, # tray
+                138, # trash can
+                139, # fan
+                142, # plate
+                147, # glass, drinking glass
             ],
-            
-            # Kitchen/bathroom fixtures
+
+            # Built-in kitchen / bathroom fixtures
             'fixtures': [
-                32, 46, 49, 50, 54, 66, 69, 70, 77, 94, 97, 98, 99, 117, 118, 119, 120,
-                # sink, toilet, bathtub, shower, dishwasher, oven, microwave, 
-                # refrigerator, stove, washer, dryer, range hood, kitchen island
+                37,  # tub, bathtub
+                47,  # sink
+                49,  # fireplace
+                50,  # refrigerator
+                65,  # toilet
+                70,  # countertop
+                71,  # stove
+                107, # washer
+                118, # oven
+                124, # microwave
+                129, # dishwasher
+                133, # hood, exhaust hood
+                145, # shower
+                146, # radiator
             ],
-            
-            # Decorative elements
+
+            # Wall hangings, window treatments, lighting, visual elements
             'decorative': [
-                6, 12, 56, 60, 61, 72, 83, 91, 96, 100, 102, 104, 106, 110, 112,
-                # painting, mirror, sculpture, chandelier, sconce, poster, tapestry
-            ]
+                18,  # curtain
+                22,  # painting, picture
+                27,  # mirror
+                40,  # base, pedestal, stand
+                42,  # column, pillar
+                63,  # blind, screen
+                66,  # flower
+                82,  # light
+                85,  # chandelier
+                100, # poster
+                130, # screen
+                132, # sculpture
+                134, # sconce
+                143, # monitor
+                144, # bulletin board
+                148, # clock
+            ],
         }
         
         # Create reverse mapping for quick lookup
@@ -77,6 +146,58 @@ class UniversalContrastAnalyzer:
             for class_id in class_ids:
                 self.class_to_category[class_id] = category
     
+    @staticmethod
+    def _rgb_to_color_info(rgb) -> Dict:
+        """Convert an RGB array to a dict with rgb list, hex string, and color name."""
+        r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+        hex_code = f'#{r:02x}{g:02x}{b:02x}'
+
+        h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        h, s, v = h * 360, s * 100, v * 100
+
+        # Achromatic
+        if s < 12:
+            if v < 15:
+                name = "black"
+            elif v < 35:
+                name = "dark gray"
+            elif v < 65:
+                name = "gray"
+            elif v < 85:
+                name = "light gray"
+            else:
+                name = "white"
+        # Warm neutrals (brown / tan / beige family)
+        # Includes desaturated warm tones AND dark warm tones (which look brown)
+        elif 15 <= h < 50 and (s < 50 or v < 65):
+            if v < 35:
+                name = "dark brown"
+            elif v < 65:
+                name = "brown"
+            elif v < 80:
+                name = "tan"
+            else:
+                name = "beige"
+        else:
+            # Chromatic hue names
+            for boundary, hue_name in [
+                (15, "red"), (40, "orange"), (65, "yellow"),
+                (160, "green"), (195, "teal"), (250, "blue"),
+                (290, "purple"), (345, "pink"), (361, "red"),
+            ]:
+                if h < boundary:
+                    break
+            if v < 30:
+                name = f"dark {hue_name}"
+            elif v > 85 and s < 30:
+                name = f"pale {hue_name}"
+            elif v > 80:
+                name = f"light {hue_name}"
+            else:
+                name = hue_name
+
+        return {"rgb": [r, g, b], "hex": hex_code, "name": name}
+
     def calculate_wcag_contrast(self, color1: np.ndarray, color2: np.ndarray) -> float:
         """Calculate WCAG 2.0 contrast ratio between two colors"""
         def relative_luminance(rgb):
@@ -179,8 +300,10 @@ class UniversalContrastAnalyzer:
             # Extract neighbor slice aligned with the interior
             neighbor = segmentation[1 + dy:h - 1 + dy, 1 + dx:w - 1 + dx]
 
-            # Vectorized comparison: find all pixels where segments differ
-            diff_mask = (seg_interior != neighbor) & (neighbor != 0) & (seg_interior != 0)
+            # Vectorized comparison: find all pixels where segments differ.
+            # ADE20K uses 0-149 for all 150 classes (0 = wall); there is no
+            # background label, so every value is a valid segment.
+            diff_mask = seg_interior != neighbor
 
             if not np.any(diff_mask):
                 continue
@@ -222,19 +345,24 @@ class UniversalContrastAnalyzer:
         hue_diff = self.calculate_hue_difference(color1, color2)
         sat_diff = self.calculate_saturation_difference(color1, color2)
         
-        # Critical relationships requiring highest contrast
+        # Critical relationships requiring highest contrast (7:1).
+        # Tuples are stored in sorted order to match the lookup key
+        # produced by tuple(sorted([category1, category2])).
         critical_pairs = [
-            ('floor', 'stairs'),
-            ('floor', 'door'),
-            ('stairs', 'wall')
+            ('door', 'floor'),     # exit/entry visibility at floor level
+            ('floor', 'stairs'),   # fall risk at level changes
+            ('stairs', 'wall'),    # stair boundary against wall
         ]
-        
-        # High priority relationships
+
+        # High priority relationships (4.5:1)
         high_priority_pairs = [
-            ('floor', 'furniture'),
-            ('wall', 'door'),
-            ('wall', 'furniture'),
-            ('floor', 'objects')
+            ('door', 'stairs'),     # stair-door transition
+            ('door', 'wall'),       # door visibility in wall
+            ('fixtures', 'floor'),  # bathroom fixtures near floor (tub, toilet)
+            ('floor', 'furniture'), # furniture visibility on floor
+            ('floor', 'objects'),   # trip hazard visibility
+            ('floor', 'wall'),      # spatial orientation — room boundary
+            ('furniture', 'wall'),  # furniture against wall
         ]
         
         # Check relationship type
@@ -297,9 +425,8 @@ class UniversalContrastAnalyzer:
             }
         }
 
-        # Get unique segments
+        # Get unique segments — all values 0-149 are valid ADE20K class labels
         unique_segments = np.unique(segmentation)
-        unique_segments = unique_segments[unique_segments != 0]  # Remove background
         results['statistics']['total_segments'] = len(unique_segments)
 
         # Build segment information
@@ -379,7 +506,10 @@ class UniversalContrastAnalyzer:
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
-                    'colors': (info1['color'].tolist(), info2['color'].tolist()),
+                    'colors': (
+                        self._rgb_to_color_info(info1['color']),
+                        self._rgb_to_color_info(info2['color']),
+                    ),
                     'wcag_ratio': float(wcag_ratio),
                     'hue_difference': float(hue_diff),
                     'saturation_difference': float(sat_diff),
@@ -511,8 +641,8 @@ class UniversalContrastAnalyzer:
         row_h = min(row_h, 120)
 
         for idx, issue in enumerate(issues[:max_swatches], 1):
-            c1 = tuple(int(v) for v in issue['colors'][0])
-            c2 = tuple(int(v) for v in issue['colors'][1])
+            c1 = tuple(issue['colors'][0]['rgb'])
+            c2 = tuple(issue['colors'][1]['rgb'])
             sev_color = self.SEVERITY_COLORS.get(issue['severity'], (200, 200, 200))
 
             # Issue number + severity dot
@@ -580,7 +710,7 @@ class UniversalContrastAnalyzer:
 
         levels = [
             ("CRITICAL", (220, 20, 60), "< 7.0:1 (stairs/doors)"),
-            ("HIGH", (255, 140, 0), "< 4.5:1 (furniture)"),
+            ("HIGH", (255, 140, 0), "< 4.5:1 (walls/furniture)"),
             ("MEDIUM", (255, 215, 0), "< 3.0:1 (standard)"),
             ("PASS", (50, 180, 50), ">= threshold"),
         ]
