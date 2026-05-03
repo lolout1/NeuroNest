@@ -20,6 +20,12 @@ Experience NeuroNest's AI-powered room analysis in action. Upload any room image
 
 ## About
 
-OneFormer: One Transformer to Rule Universal Image Segmentation
+NeuroNest analyzes indoor environments for safety hazards relevant to Alzheimer's and dementia care. The pipeline combines:
+
+- **Semantic segmentation** (EoMT-DINOv3-Large, 150-class ADE20K) for scene parsing
+- **Blackspot detection** (Mask R-CNN R50-FPN, fine-tuned) for dark floor regions perceived as voids
+- **WCAG 2.1 contrast analysis** for low-contrast surface boundaries
+- **Sign & clock placement analysis** (ADA-compliant centroid heights, 48–60 inches) via monocular metric depth estimation
+- **Explainable AI suite** (7 visualization methods) for model interpretability
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
