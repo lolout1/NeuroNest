@@ -799,7 +799,7 @@ def _build_structured_json(results: Dict) -> Dict:
         stats = ct.get("statistics", {})
         serialized = []
         for issue in ct.get("issues", []):
-            serialized.append({
+            entry = {
                 "severity": issue["severity"],
                 "surfaces": list(issue["categories"]),
                 "wcag_ratio": round(issue["wcag_ratio"], 2),
@@ -810,8 +810,13 @@ def _build_structured_json(results: Dict) -> Dict:
                 "hue_difference": round(issue["hue_difference"], 1),
                 "saturation_difference": int(issue["saturation_difference"]),
                 "boundary_pixels": issue["boundary_pixels"],
-            })
-        data["contrast"] = {
+            }
+            # Phase A5 — additive ΔE2000 chromatic difference. WCAG misses
+            # red-green isoluminant pairs entirely; ΔE2000 surfaces them.
+            if "delta_e2000" in issue:
+                entry["delta_e2000"] = round(float(issue["delta_e2000"]), 2)
+            serialized.append(entry)
+        contrast_block = {
             "total_issues": stats.get("low_contrast_pairs", 0),
             "by_severity": {
                 "critical": stats.get("critical_issues", 0),
@@ -820,6 +825,23 @@ def _build_structured_json(results: Dict) -> Dict:
             },
             "issues": serialized,
         }
+        # Phase A4 — additive intrasegment warnings (striped rugs / patterned
+        # surfaces). Always emit the key (possibly empty) so consumers can
+        # iterate unconditionally, matching the contrast.issues pattern.
+        warnings = ct.get("intrasegment_warnings") or []
+        contrast_block["intrasegment_warnings"] = [
+            {
+                "segment_id": int(w["segment_id"]),
+                "category": w["category"],
+                "delta_e": round(float(w["delta_e"]), 2),
+                "minority_share": round(float(w["minority_share"]), 3),
+                "primary_color": w["primary_color"],
+                "secondary_color": w["secondary_color"],
+                "area_pixels": int(w["area_pixels"]),
+            }
+            for w in warnings
+        ]
+        data["contrast"] = contrast_block
 
     pl = results.get("placement")
     if pl:

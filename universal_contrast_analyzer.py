@@ -25,6 +25,16 @@ class UniversalContrastAnalyzer:
         use_local_boundary_sampling: bool = True,
         boundary_band_pixels: int = 8,
         min_boundary_band_pixels: int = 50,
+        use_kmeans_lab: bool = True,
+        kmeans_k: int = 3,
+        use_morphological_boundary_close: bool = True,
+        boundary_close_kernel: int = 3,
+        min_boundary_component_pixels: int = 20,
+        use_intrasegment_scan: bool = True,
+        intrasegment_delta_e_threshold: float = 25.0,
+        intrasegment_min_segment_pixels: int = 5000,
+        intrasegment_min_minority_share: float = 0.15,
+        compute_delta_e2000: bool = True,
     ):
         self.wcag_threshold = wcag_threshold
 
@@ -45,6 +55,44 @@ class UniversalContrastAnalyzer:
             raise ValueError(
                 f"min_boundary_band_pixels must be >= 1, got {self.min_boundary_band_pixels}"
             )
+
+        # K-means in CIELAB (Phase A2).
+        # Replaces IQR median for color extraction. CIELAB is perceptually
+        # uniform, so cluster centroids correspond to colors a person would
+        # actually call "the color of that region" rather than an arithmetic
+        # mid-tone of two distinct populations (lit vs shadow).
+        self.use_kmeans_lab = bool(use_kmeans_lab)
+        self.kmeans_k = int(kmeans_k)
+        if self.kmeans_k < 2:
+            raise ValueError(f"kmeans_k must be >= 2, got {self.kmeans_k}")
+
+        # Boundary morphological cleanup (Phase A3).
+        # 1-pixel segmentation jitter inflates the count of "low-contrast pairs"
+        # on noisy seg maps. A small morphological close + connected-component
+        # filter throws out tiny speckle edges before any pair is scored.
+        self.use_morphological_boundary_close = bool(use_morphological_boundary_close)
+        self.boundary_close_kernel = int(boundary_close_kernel)
+        self.min_boundary_component_pixels = int(min_boundary_component_pixels)
+        if self.boundary_close_kernel < 1:
+            raise ValueError(
+                f"boundary_close_kernel must be >= 1, got {self.boundary_close_kernel}"
+            )
+
+        # Intra-segment pattern scan (Phase A4).
+        # Striped rugs and patterned wallpaper are a real fall-hazard class the
+        # pair-only analyzer silently misses. Within each large segment, run
+        # k=2 k-means in LAB; flag a warning when the two cluster centroids are
+        # ΔE > threshold AND the minority cluster covers >= min_share of pixels.
+        self.use_intrasegment_scan = bool(use_intrasegment_scan)
+        self.intrasegment_delta_e_threshold = float(intrasegment_delta_e_threshold)
+        self.intrasegment_min_segment_pixels = int(intrasegment_min_segment_pixels)
+        self.intrasegment_min_minority_share = float(intrasegment_min_minority_share)
+
+        # CIEDE2000 chromatic difference (Phase A5).
+        # Strictly additive: emitted alongside `wcag_ratio`. WCAG looks at
+        # luminance only, so red/green isoluminant pairs slip through; ΔE2000
+        # captures the chromatic difference WCAG ignores.
+        self.compute_delta_e2000 = bool(compute_delta_e2000)
 
         # ADE20K semantic class mappings for indoor care environments.
         # Each ID verified against ade20k_classes.py (0-indexed, 150 classes).
@@ -269,10 +317,22 @@ class UniversalContrastAnalyzer:
     
     def extract_dominant_color(self, image: np.ndarray, mask: np.ndarray,
                              sample_size: int = 1000) -> np.ndarray:
-        """Extract dominant color using vectorized IQR outlier rejection.
+        """Extract dominant color from a masked region.
 
-        Replaces DBSCAN clustering (O(n^2)) with IQR-based filtering (O(n))
-        for ~10-50x speedup while producing equivalent results.
+        Dispatches to the perceptual k-means-in-LAB extractor (Phase A2) when
+        enabled, otherwise falls back to the legacy IQR-median method.
+        """
+        if self.use_kmeans_lab:
+            return self._extract_dominant_color_kmeans_lab(image, mask, sample_size)
+        return self._extract_dominant_color_iqr(image, mask, sample_size)
+
+    @staticmethod
+    def _extract_dominant_color_iqr(image: np.ndarray, mask: np.ndarray,
+                                    sample_size: int = 1000) -> np.ndarray:
+        """Legacy IQR-median extractor (Phase pre-A2 baseline).
+
+        Vectorized IQR outlier rejection — O(n) numpy. Kept as the backward-
+        compatible fallback when use_kmeans_lab=False.
         """
         if not np.any(mask):
             return np.array([128, 128, 128])
@@ -281,13 +341,11 @@ class UniversalContrastAnalyzer:
         if len(masked_pixels) == 0:
             return np.array([128, 128, 128])
 
-        # Sample if too many pixels
         if len(masked_pixels) > sample_size:
             indices = np.random.choice(len(masked_pixels), sample_size, replace=False)
             masked_pixels = masked_pixels[indices]
 
         if len(masked_pixels) > 50:
-            # IQR-based outlier rejection: O(n) vectorized numpy ops
             q1 = np.percentile(masked_pixels, 25, axis=0)
             q3 = np.percentile(masked_pixels, 75, axis=0)
             iqr = q3 - q1
@@ -300,6 +358,69 @@ class UniversalContrastAnalyzer:
                 return np.median(masked_pixels[inlier_mask], axis=0).astype(int)
 
         return np.median(masked_pixels, axis=0).astype(int)
+
+    def _extract_dominant_color_kmeans_lab(
+        self, image: np.ndarray, mask: np.ndarray, sample_size: int = 1000,
+    ) -> np.ndarray:
+        """Pick the dominant cluster's centroid in CIELAB (Phase A2).
+
+        For multi-modal regions (lit + shadowed wall, wainscoting, patterned
+        floor), arithmetic-mean and IQR-median both collapse the modes into a
+        midtone that doesn't exist anywhere in the region. K-means in LAB
+        partitions the modes into clusters; the largest cluster's centroid is
+        the color a viewer would actually point to.
+
+        Falls back to the IQR extractor on degenerate input (too few pixels,
+        scipy unavailable, all-empty clusters).
+        """
+        if not np.any(mask):
+            return np.array([128, 128, 128])
+        masked = image[mask]
+        if len(masked) == 0:
+            return np.array([128, 128, 128])
+
+        if len(masked) > sample_size:
+            rng = np.random.default_rng(seed=0)
+            idx = rng.choice(len(masked), sample_size, replace=False)
+            masked = masked[idx]
+
+        if len(masked) < self.kmeans_k * 5:
+            return self._extract_dominant_color_iqr(image, mask, sample_size)
+
+        try:
+            from scipy.cluster.vq import kmeans2
+        except ImportError:
+            return self._extract_dominant_color_iqr(image, mask, sample_size)
+
+        # OpenCV LAB (uint8): L in [0,255] (scaled from 0-100), a/b in [0,255]
+        # centered at 128. Floats here so kmeans returns continuous centroids.
+        lab = cv2.cvtColor(
+            masked.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2LAB
+        ).reshape(-1, 3).astype(np.float64)
+
+        # Skip k-means on near-constant input — kmeans2 emits a noisy
+        # "empty cluster" warning and the median is the right answer anyway.
+        if float(lab.std(axis=0).max()) < 1.0:
+            return self._extract_dominant_color_iqr(image, mask, sample_size)
+
+        import warnings
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                centers, labels = kmeans2(
+                    lab, k=self.kmeans_k, seed=0, minit="++", missing="warn"
+                )
+        except Exception:
+            return self._extract_dominant_color_iqr(image, mask, sample_size)
+
+        counts = np.bincount(labels, minlength=self.kmeans_k)
+        if counts.max() == 0:
+            return self._extract_dominant_color_iqr(image, mask, sample_size)
+        dominant_idx = int(counts.argmax())
+
+        center_lab = centers[dominant_idx].clip(0, 255).astype(np.uint8).reshape(1, 1, 3)
+        center_rgb = cv2.cvtColor(center_lab, cv2.COLOR_LAB2RGB).reshape(3)
+        return center_rgb.astype(int)
 
     def _sample_boundary_band_color(
         self,
@@ -381,12 +502,132 @@ class UniversalContrastAnalyzer:
                     adjacencies[pair] = np.zeros((h, w), dtype=bool)
                 adjacencies[pair][ys[pair_mask], xs[pair_mask]] = True
 
-        # Filter small boundaries (noise)
-        min_boundary_pixels = 20
-        return {pair: boundary for pair, boundary in adjacencies.items()
-                if np.sum(boundary) >= min_boundary_pixels}
+        # Filter small boundaries (noise). Phase A3: when enabled, run
+        # morph-close + connected-component drop so 1-pixel segmentation
+        # speckle doesn't produce phantom pairs.
+        cleaned: Dict[Tuple[int, int], np.ndarray] = {}
+        for pair, boundary in adjacencies.items():
+            if self.use_morphological_boundary_close:
+                surviving = self._cleanup_boundary_mask(boundary)
+            else:
+                surviving = boundary if int(boundary.sum()) >= 20 else None
+            if surviving is not None:
+                cleaned[pair] = surviving
+        return cleaned
+
+    def _cleanup_boundary_mask(self, boundary: np.ndarray) -> Optional[np.ndarray]:
+        """Morph-close a boundary mask, then drop tiny connected components.
+
+        Returns the surviving boundary (HxW bool) or None if everything is
+        speckle. Order matters: closing first knits adjacent jitter into solid
+        chunks so the connected-component filter operates on coherent pieces
+        rather than punishing legitimate boundaries that happen to have a few
+        pixel-scale gaps.
+        """
+        k = self.boundary_close_kernel
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        closed = cv2.morphologyEx(
+            boundary.astype(np.uint8), cv2.MORPH_CLOSE, kernel
+        )
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+        keep = np.zeros_like(closed, dtype=bool)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= self.min_boundary_component_pixels:
+                keep |= (labels == i)
+        return keep if keep.any() else None
     
-    def is_contrast_sufficient(self, color1: np.ndarray, color2: np.ndarray, 
+    def calculate_delta_e2000(self, color1: np.ndarray, color2: np.ndarray) -> float:
+        """CIEDE2000 perceptual color-difference between two RGB triples (Phase A5).
+
+        Strictly additive metric: WCAG luminance ratio misses chromatic
+        contrast entirely (red/green isoluminant pairs that look indistinct
+        to a normally-sighted observer pass WCAG with ratio = 1.0). ΔE2000
+        captures that gap. Returns 0.0 when computation is disabled.
+        """
+        if not self.compute_delta_e2000:
+            return 0.0
+        try:
+            from skimage.color import rgb2lab, deltaE_ciede2000
+        except ImportError:
+            return 0.0
+        lab1 = rgb2lab(
+            np.asarray(color1, dtype=np.float64).reshape(1, 1, 3) / 255.0
+        ).reshape(3)
+        lab2 = rgb2lab(
+            np.asarray(color2, dtype=np.float64).reshape(1, 1, 3) / 255.0
+        ).reshape(3)
+        return float(deltaE_ciede2000(lab1, lab2))
+
+    def _scan_intrasegment_pattern(
+        self, image: np.ndarray, mask: np.ndarray, seg_id: int, category: str,
+    ) -> Optional[Dict]:
+        """Detect multi-modal patterning inside a single segment (Phase A4).
+
+        Catches striped rugs, patterned wallpaper, and tiled floors that the
+        pair-only contrast analyzer can't see because both modes live within
+        one segment. Returns a warning dict on detection or None.
+        """
+        try:
+            from scipy.cluster.vq import kmeans2
+        except ImportError:
+            return None
+        masked = image[mask]
+        if len(masked) < 200:
+            return None
+        if len(masked) > 2000:
+            rng = np.random.default_rng(seed=0)
+            idx = rng.choice(len(masked), 2000, replace=False)
+            masked = masked[idx]
+
+        lab = cv2.cvtColor(
+            masked.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2LAB
+        ).reshape(-1, 3).astype(np.float64)
+
+        if float(lab.std(axis=0).max()) < 1.0:
+            return None
+
+        import warnings
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                centers, labels = kmeans2(
+                    lab, k=2, seed=0, minit="++", missing="warn"
+                )
+        except Exception:
+            return None
+        counts = np.bincount(labels, minlength=2)
+        total = int(counts.sum())
+        if total == 0:
+            return None
+        minority_share = counts.min() / total
+        if minority_share < self.intrasegment_min_minority_share:
+            return None
+
+        # CIE76 ΔE between the two cluster centers — sufficient for a screening
+        # gate; ΔE2000 is reported per-pair in the issues list (A5).
+        delta_e = float(np.linalg.norm(centers[0] - centers[1]))
+        if delta_e < self.intrasegment_delta_e_threshold:
+            return None
+
+        centers_rgb = []
+        for c in centers:
+            c_lab = c.clip(0, 255).astype(np.uint8).reshape(1, 1, 3)
+            c_rgb = cv2.cvtColor(c_lab, cv2.COLOR_LAB2RGB).reshape(3).astype(int)
+            centers_rgb.append(c_rgb)
+        major_idx = int(counts.argmax())
+        minor_idx = 1 - major_idx
+
+        return {
+            "segment_id": int(seg_id),
+            "category": category,
+            "delta_e": delta_e,
+            "minority_share": float(minority_share),
+            "primary_color": self._rgb_to_color_info(centers_rgb[major_idx]),
+            "secondary_color": self._rgb_to_color_info(centers_rgb[minor_idx]),
+            "area_pixels": int(mask.sum()),
+        }
+
+    def is_contrast_sufficient(self, color1: np.ndarray, color2: np.ndarray,
                              category1: str, category2: str) -> Tuple[bool, str]:
         """
         Determine if contrast is sufficient based on WCAG and perceptual guidelines.
@@ -465,6 +706,9 @@ class UniversalContrastAnalyzer:
         results = {
             'issues': [],
             'visualization': image.copy(),
+            # Phase A4 — populated below when use_intrasegment_scan is on.
+            # Always present as a list so consumers can iterate unconditionally.
+            'intrasegment_warnings': [],
             'statistics': {
                 'total_segments': 0,
                 'analyzed_pairs': 0,
@@ -472,7 +716,8 @@ class UniversalContrastAnalyzer:
                 'critical_issues': 0,
                 'high_priority_issues': 0,
                 'medium_priority_issues': 0,
-                'floor_object_issues': 0
+                'floor_object_issues': 0,
+                'intrasegment_warning_count': 0,
             }
         }
 
@@ -502,6 +747,25 @@ class UniversalContrastAnalyzer:
                 'area': area,
                 'class_id': seg_id
             }
+
+        # Phase A4 — intra-segment pattern scan. Runs once per qualifying
+        # segment, independent of the pair-contrast loop, so a striped rug
+        # produces a warning even when its boundaries pass WCAG against
+        # neighboring surfaces.
+        if self.use_intrasegment_scan:
+            for seg_id, info in segment_info.items():
+                if info['area'] < self.intrasegment_min_segment_pixels:
+                    continue
+                if info['category'] == 'unknown':
+                    continue
+                warning = self._scan_intrasegment_pattern(
+                    image, info['mask'], seg_id, info['category']
+                )
+                if warning is not None:
+                    results['intrasegment_warnings'].append(warning)
+            results['statistics']['intrasegment_warning_count'] = len(
+                results['intrasegment_warnings']
+            )
 
         # Find all adjacent segment pairs
         logger.info("Finding adjacent segments...")
@@ -567,7 +831,8 @@ class UniversalContrastAnalyzer:
                 elif severity == 'medium':
                     results['statistics']['medium_priority_issues'] += 1
 
-                # Record the issue
+                # Record the issue. Phase A5 adds delta_e2000 alongside the
+                # existing WCAG ratio — strictly additive, no behavior change.
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
@@ -576,6 +841,7 @@ class UniversalContrastAnalyzer:
                         self._rgb_to_color_info(color2),
                     ),
                     'wcag_ratio': float(wcag_ratio),
+                    'delta_e2000': float(self.calculate_delta_e2000(color1, color2)),
                     'hue_difference': float(hue_diff),
                     'saturation_difference': float(sat_diff),
                     'boundary_pixels': int(np.sum(boundary)),
