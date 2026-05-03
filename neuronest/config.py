@@ -76,3 +76,43 @@ DISPLAY_MAX_WIDTH = 1920
 DISPLAY_MAX_HEIGHT = 1080
 
 EOMT_MODEL_ID = "tue-mps/ade20k_semantic_eomt_large_512"
+
+# --- Defect 3: Sign & Clock vertical placement ---
+# ADE20K class IDs used by the placement analyzer. See ade20k_classes.py for the
+# full catalog. Tuples (not sets) so the order is deterministic for logging.
+SIGN_CLASS_IDS = (43,)         # 43: signboard, sign
+CLOCK_CLASS_IDS = (148,)       # 148: clock
+PLACEMENT_TARGET_CLASS_IDS = SIGN_CLASS_IDS + CLOCK_CLASS_IDS
+
+# Calibration reference classes (used by placement/calibration.py to scale depth)
+DOOR_CLASS_ID = 14             # 14: door
+CEILING_CLASS_ID = 5           # 5: ceiling
+
+# ADA / dementia-design recommended centroid range, in inches above finished floor.
+ADA_PLACEMENT_LOW_IN = 48.0
+ADA_PLACEMENT_HIGH_IN = 60.0
+ADA_PLACEMENT_TOLERANCE_IN = 2.0   # soft band; severity bumped one tier inside
+
+# Severity thresholds (deviation outside the [low, high] band, in inches)
+PLACEMENT_SEVERITY_CRITICAL_IN = 6.0
+PLACEMENT_SEVERITY_HIGH_IN = 3.0
+
+# Real-world reference dimensions used for self-calibration (inches)
+DOOR_REFERENCE_HEIGHT_IN = 80.0     # US standard 6'8" interior door
+CEILING_MIN_REFERENCE_IN = 84.0     # plausible indoor ceiling lower bound
+CEILING_MAX_REFERENCE_IN = 144.0    # upper bound for sanity check
+CALIBRATION_SCALE_MIN = 0.7         # reject scale corrections outside this band
+CALIBRATION_SCALE_MAX = 1.4
+
+# Minimum connected-component area (pixels) to count as a real instance
+PLACEMENT_MIN_INSTANCE_PIXELS = 100
+
+# Minimum floor pixels required to attempt RANSAC plane fit
+PLACEMENT_MIN_FLOOR_PIXELS = 1500
+
+# Monocular metric depth model (Apache 2.0, ~25M params, ~50MB INT8 resident)
+DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+
+# Default camera horizontal field-of-view assumption when no EXIF available.
+# 60 degrees matches typical phone main-camera FOV (iPhone, modern Android).
+DEFAULT_HORIZONTAL_FOV_DEG = 60.0
