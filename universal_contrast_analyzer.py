@@ -35,6 +35,8 @@ class UniversalContrastAnalyzer:
         intrasegment_min_segment_pixels: int = 5000,
         intrasegment_min_minority_share: float = 0.15,
         compute_delta_e2000: bool = True,
+        compute_apca_lc: bool = True,
+        compute_weber_contrast: bool = True,
     ):
         self.wcag_threshold = wcag_threshold
 
@@ -93,6 +95,19 @@ class UniversalContrastAnalyzer:
         # luminance only, so red/green isoluminant pairs slip through; ΔE2000
         # captures the chromatic difference WCAG ignores.
         self.compute_delta_e2000 = bool(compute_delta_e2000)
+
+        # APCA Lc (Phase B1) — strictly additive, emitted alongside wcag_ratio.
+        # Polarity-aware: distinguishes light-on-dark from dark-on-light, which
+        # WCAG's symmetric ratio cannot. Severity classification UNCHANGED
+        # (Phase B4 composite severity intentionally deferred — would require
+        # ground-truth calibration we don't have).
+        self.compute_apca_lc = bool(compute_apca_lc)
+
+        # Weber contrast (Phase B3) — strictly additive figure-on-ground metric.
+        # Smaller-area segment is treated as foreground; sign encodes whether
+        # foreground is brighter (+) or darker (−) than background. Severity
+        # classification UNCHANGED.
+        self.compute_weber_contrast = bool(compute_weber_contrast)
 
         # ADE20K semantic class mappings for indoor care environments.
         # Each ID verified against ade20k_classes.py (0-indexed, 150 classes).
@@ -536,6 +551,90 @@ class UniversalContrastAnalyzer:
                 keep |= (labels == i)
         return keep if keep.any() else None
     
+    @staticmethod
+    def _srgb_to_screen_luminance(rgb: np.ndarray) -> float:
+        """sRGB → screen-Y per APCA SAPC-8 reference (gamma 2.4, no soft-clip).
+
+        APCA's luminance formula differs from WCAG 2.x in two ways: (1) gamma
+        2.4 with no piecewise-linear toe, (2) slightly different ITU-R BT.709
+        weights. The numbers are taken verbatim from W3C's SAPC reference
+        (https://github.com/Myndex/SAPC-APCA, public-domain algorithm).
+        """
+        r, g, b = (np.asarray(rgb, dtype=np.float64) / 255.0) ** 2.4
+        return float(0.2126729 * r + 0.7151522 * g + 0.072175 * b)
+
+    def calculate_apca_lc(self, color1: np.ndarray, color2: np.ndarray) -> float:
+        """APCA Lc perceptual lightness contrast (Phase B1).
+
+        Returns Lc in approximately [-108, +106]. Sign encodes polarity:
+        positive = darker color on lighter background (BoW),
+        negative = lighter color on darker background (WoB). Magnitude is
+        polarity-independent contrast strength; the W3C accessibility-track
+        body-text floor is |Lc| ≥ 75, environmental-signage practice is
+        roughly |Lc| ≥ 60.
+
+        For our pair-contrast use we don't know which surface is "text"; we
+        compute both polarities and return the more pessimistic (smaller
+        magnitude). That answers "did this pair clear APCA either way?".
+
+        Strictly additive — does not change severity classification. Returns
+        0.0 when below the noise floor or computation is disabled.
+
+        Constants per W3C SAPC-8 reference; algorithm is public-domain.
+        """
+        BLK_THRS = 0.022
+        BLK_CLMP = 1.414
+        DELTA_Y_MIN = 0.0005
+        SCALE_BOW = 1.14
+        SCALE_WOB = 1.14
+        NORM_BG, NORM_TXT = 0.56, 0.57
+        REV_BG,  REV_TXT  = 0.65, 0.62
+        LO_BOW_OFFSET = 0.027
+        LO_WOB_OFFSET = 0.027
+
+        def soft_clip(y: float) -> float:
+            return y if y >= BLK_THRS else y + (BLK_THRS - y) ** BLK_CLMP
+
+        def lc_for_polarity(text_rgb, bg_rgb) -> float:
+            y_t = soft_clip(self._srgb_to_screen_luminance(text_rgb))
+            y_b = soft_clip(self._srgb_to_screen_luminance(bg_rgb))
+            if abs(y_b - y_t) < DELTA_Y_MIN:
+                return 0.0
+            if y_b > y_t:   # dark text on light bg (BoW)
+                sapc = (y_b ** NORM_BG - y_t ** NORM_TXT) * SCALE_BOW
+                return (sapc - LO_BOW_OFFSET) * 100.0 if sapc >= LO_BOW_OFFSET else 0.0
+            sapc = (y_b ** REV_BG - y_t ** REV_TXT) * SCALE_WOB
+            return (sapc + LO_WOB_OFFSET) * 100.0 if sapc <= -LO_WOB_OFFSET else 0.0
+
+        # Compute both polarities; report the smaller-magnitude (pessimistic).
+        lc12 = lc_for_polarity(color1, color2)
+        lc21 = lc_for_polarity(color2, color1)
+        return float(lc12 if abs(lc12) <= abs(lc21) else lc21)
+
+    def calculate_weber_contrast(
+        self, fg_color: np.ndarray, bg_color: np.ndarray,
+    ) -> float:
+        """Weber contrast (L_fg − L_bg) / L_bg for figure-on-ground (Phase B3).
+
+        Right metric for small obstacles on a uniform floor — WCAG's symmetric
+        ratio ignores which surface is figure vs ground, but a dark cushion on
+        a light floor is detected differently than the same colors swapped.
+        Weber convention: positive when figure is brighter than background,
+        negative when darker.
+
+        Caller must designate which surface is "figure" (typically the
+        smaller-area one); for pair iteration we use the smaller-area segment
+        as foreground.
+
+        Returns 0.0 when background luminance is too small to be meaningful
+        (avoids division by zero on near-black backgrounds).
+        """
+        l_fg = self._srgb_to_screen_luminance(fg_color)
+        l_bg = self._srgb_to_screen_luminance(bg_color)
+        if l_bg < 1e-6:
+            return 0.0
+        return float((l_fg - l_bg) / l_bg)
+
     def calculate_delta_e2000(self, color1: np.ndarray, color2: np.ndarray) -> float:
         """CIEDE2000 perceptual color-difference between two RGB triples (Phase A5).
 
@@ -831,8 +930,15 @@ class UniversalContrastAnalyzer:
                 elif severity == 'medium':
                     results['statistics']['medium_priority_issues'] += 1
 
-                # Record the issue. Phase A5 adds delta_e2000 alongside the
-                # existing WCAG ratio — strictly additive, no behavior change.
+                # Record the issue. Phase A5 adds delta_e2000, Phase B1 adds
+                # apca_lc, Phase B3 adds weber_contrast — all strictly additive
+                # alongside wcag_ratio. None changes the severity decision.
+                # Weber needs a figure/background designation — smaller-area
+                # segment is foreground (typical for trip hazards on floors).
+                if info1['area'] <= info2['area']:
+                    fg_color, bg_color = color1, color2
+                else:
+                    fg_color, bg_color = color2, color1
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
@@ -842,6 +948,14 @@ class UniversalContrastAnalyzer:
                     ),
                     'wcag_ratio': float(wcag_ratio),
                     'delta_e2000': float(self.calculate_delta_e2000(color1, color2)),
+                    'apca_lc': (
+                        float(self.calculate_apca_lc(color1, color2))
+                        if self.compute_apca_lc else 0.0
+                    ),
+                    'weber_contrast': (
+                        float(self.calculate_weber_contrast(fg_color, bg_color))
+                        if self.compute_weber_contrast else 0.0
+                    ),
                     'hue_difference': float(hue_diff),
                     'saturation_difference': float(sat_diff),
                     'boundary_pixels': int(np.sum(boundary)),

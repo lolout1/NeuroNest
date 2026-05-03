@@ -815,6 +815,12 @@ def _build_structured_json(results: Dict) -> Dict:
             # red-green isoluminant pairs entirely; ΔE2000 surfaces them.
             if "delta_e2000" in issue:
                 entry["delta_e2000"] = round(float(issue["delta_e2000"]), 2)
+            # Phase B1 — APCA Lc, polarity-aware perceptual lightness contrast.
+            if "apca_lc" in issue:
+                entry["apca_lc"] = round(float(issue["apca_lc"]), 2)
+            # Phase B3 — Weber contrast (figure / background asymmetry).
+            if "weber_contrast" in issue:
+                entry["weber_contrast"] = round(float(issue["weber_contrast"]), 3)
             serialized.append(entry)
         contrast_block = {
             "total_issues": stats.get("low_contrast_pairs", 0),

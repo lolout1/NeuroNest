@@ -152,6 +152,46 @@ def _scene_striped_rug() -> Scene:
     )
 
 
+def _scene_polarity_asymmetry() -> Scene:
+    """Dark-on-light pair where APCA polarity adds info WCAG can't (Phase B1).
+
+    WCAG ratio is symmetric — swapping which color is "text" vs "bg" gives
+    the same number. APCA Lc has signed polarity, so a dark figure on a
+    light background gets a different Lc from the same colors swapped. We
+    require |apca_lc| > 30 on this near-3:1 pair (genuinely contrasty by
+    perceptual standards).
+    """
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    seg = np.zeros((H, W), dtype=np.int32)
+    img[0:120, :] = (235, 235, 235); seg[0:120, :] = WALL
+    img[120:, :] = (110, 110, 110);  seg[120:, :] = FLOOR
+    return Scene(
+        name="polarity_asymmetry",
+        image=img, seg=seg,
+        targets=["B1"],
+    )
+
+
+def _scene_figure_on_ground() -> Scene:
+    """Small mid-grey object on large light floor (Phase B3 target).
+
+    Object is dark enough vs floor that floor-objects high-priority (4.5:1)
+    contrast fails — POST_A1 and FULL_A both flag it. WCAG ratio is symmetric
+    so it loses figure-bg asymmetry; Weber should report a strongly negative
+    value (figure ~65% darker than background), surfacing the trip-hazard
+    asymmetry that matters for fall risk.
+    """
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    seg = np.zeros((H, W), dtype=np.int32)
+    img[:, :] = (220, 220, 215); seg[:, :] = FLOOR
+    img[100:160, 130:200] = (140, 140, 140); seg[100:160, 130:200] = 41   # 41: box → objects
+    return Scene(
+        name="figure_on_ground",
+        image=img, seg=seg,
+        targets=["B3"],
+    )
+
+
 def _scene_isoluminant() -> Scene:
     """Floor and door at near-equal luminance but very different chroma.
 
@@ -180,6 +220,8 @@ SCENES: List[Scene] = [
     _scene_phantom_pair_speckle(),
     _scene_striped_rug(),
     _scene_isoluminant(),
+    _scene_polarity_asymmetry(),
+    _scene_figure_on_ground(),
 ]
 
 
@@ -294,6 +336,25 @@ def check_target_features(post: Dict, full: Dict, scene: Scene) -> List[str]:
     if "A3" in scene.targets:
         # A3 effect verified by post_pairs vs full_pairs comparison elsewhere
         pass
+    if "B1" in scene.targets:
+        if not full["issues"]:
+            msgs.append("expected at least one issue with apca_lc, none recorded")
+        else:
+            lc = full["issues"][0].get("apca_lc")
+            if lc is None or abs(lc) < 30:
+                msgs.append(
+                    f"expected |apca_lc| > 30 on dark-on-light pair, got {lc}"
+                )
+    if "B3" in scene.targets:
+        if not full["issues"]:
+            msgs.append("expected at least one issue with weber_contrast, none recorded")
+        else:
+            wc = full["issues"][0].get("weber_contrast")
+            # Dark figure on light bg should yield strongly negative Weber.
+            if wc is None or wc > -0.5:
+                msgs.append(
+                    f"expected weber_contrast < -0.5 on dark-on-light figure, got {wc}"
+                )
     return msgs
 
 
@@ -313,8 +374,12 @@ def main() -> int:
     _run(_make_post_a1, warm)
 
     failed = 0
-    print(f"{'scene':28s}  {'POST_A1':>8s} {'FULL_A':>8s}  delta  warnings  ΔE2000  status")
-    print("-" * 100)
+    header = (
+        f"{'scene':28s}  {'POST_A1':>7s} {'FULL_A':>6s} {'Δ':>3s}  "
+        f"{'wrn':>3s}  {'ΔE00':>5s}  {'APCA':>6s}  {'Weber':>6s}  status"
+    )
+    print(header)
+    print("-" * len(header))
     for scene in SCENES:
         post, t_post = _run(_make_post_a1, scene)
         full, t_full = _run(_make_full_a, scene)
@@ -332,22 +397,28 @@ def main() -> int:
         n_post = len(post["issues"])
         n_full = len(full["issues"])
         n_warn = len(full.get("intrasegment_warnings", []))
-        de_max = max(
-            (i.get("delta_e2000", 0.0) for i in full["issues"]),
-            default=0.0,
-        )
+
+        def _peak(field: str, key: str = "max") -> float:
+            vals = [i.get(field, 0.0) for i in full["issues"]]
+            if not vals:
+                return 0.0
+            return max(vals, key=abs) if key == "max" else min(vals)
+
+        de_max = _peak("delta_e2000")
+        apca_max = _peak("apca_lc")
+        weber_max = _peak("weber_contrast")
         status = "PASS" if not problems else "FAIL"
         if problems:
             failed += 1
         print(
-            f"{scene.name:28s}  {n_post:8d} {n_full:8d}  {n_full - n_post:+5d}  "
-            f"{n_warn:8d}  {de_max:6.1f}  {status} "
-            f"({t_post * 1000:.0f}ms → {t_full * 1000:.0f}ms)"
+            f"{scene.name:28s}  {n_post:7d} {n_full:6d} {n_full - n_post:+3d}  "
+            f"{n_warn:3d}  {de_max:5.1f}  {apca_max:+6.1f}  {weber_max:+6.2f}  "
+            f"{status} ({t_post * 1000:.0f}ms → {t_full * 1000:.0f}ms)"
         )
         for p in problems:
             print(f"    - {p}")
 
-    print("-" * 100)
+    print("-" * len(header))
     print(
         f"{'OVERALL':28s}  "
         f"{'PASS' if failed == 0 else f'FAIL ({failed}/{len(SCENES)} scenes)'}"
