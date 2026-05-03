@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def create_gradio_interface():
     app = NeuroNestApp()
-    seg_ok, blackspot_ok = app.initialize()
+    seg_ok, blackspot_ok, placement_ok = app.initialize()
     if not seg_ok:
         raise RuntimeError("Failed to initialize EoMT segmentation")
 
@@ -35,25 +35,47 @@ def create_gradio_interface():
 
     # --- Wrapper functions ---
 
-    def analyze_wrapper(image_path, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast):
+    def analyze_wrapper(
+        image_path,
+        blackspot_threshold,
+        contrast_threshold,
+        enable_blackspot,
+        enable_contrast,
+        enable_placement,
+    ):
         if image_path is None:
-            return None, None, None, "Please upload an image.", {}, {}
+            return (
+                None, None, None, None,
+                "Please upload an image.", {}, {},
+            )
         results = app.analyze_image(
             image_path=image_path,
             blackspot_threshold=blackspot_threshold,
             contrast_threshold=contrast_threshold,
             enable_blackspot=enable_blackspot,
             enable_contrast=enable_contrast,
+            enable_placement=enable_placement,
         )
         if "error" in results:
-            return None, None, None, f"Error: {results['error']}", {}, {}
+            return (
+                None, None, None, None,
+                f"Error: {results['error']}", {}, {},
+            )
         seg_output = results["segmentation"]["visualization"] if results["segmentation"] else None
         blackspot_output = results["blackspot"]["visualization"] if results["blackspot"] else None
         contrast_output = results["contrast"]["visualization"] if results["contrast"] else None
+        placement_output = (
+            results["placement"]["visualization"]
+            if results.get("placement") and not results["placement"].get("skipped")
+            else None
+        )
 
         report = _comprehensive_report(results)
         structured = _build_structured_json(results)
-        return seg_output, blackspot_output, contrast_output, report, structured, results
+        return (
+            seg_output, blackspot_output, contrast_output, placement_output,
+            report, structured, results,
+        )
 
     def _build_xai_summary(results, method_name="Full Suite"):
         METHOD_NAMES = {
@@ -185,6 +207,9 @@ def create_gradio_interface():
             blackspot_count = 0
             blackspot_coverage = 0.0
             contrast_issues = []
+            placement_detections = []
+            placement_count = 0
+            placement_violations = 0
 
             if app.blackspot_detector is not None:
                 progress(0.15, desc="Detecting blackspots...")
@@ -196,21 +221,38 @@ def create_gradio_interface():
                 except Exception as e:
                     logger.warning(f"Blackspot detection failed: {e}")
 
-            progress(0.25, desc="Analyzing contrast...")
+            progress(0.22, desc="Analyzing contrast...")
             try:
                 contrast_result = app.contrast_analyzer.analyze_contrast(image_rgb, seg_mask)
                 contrast_issues = contrast_result.get("issues", [])
             except Exception as e:
                 logger.warning(f"Contrast analysis failed: {e}")
 
-            progress(0.3, desc="Starting defect XAI analysis...")
+            if (
+                app.placement_analyzer is not None
+                and app.placement_analyzer.depth_model.is_loaded
+            ):
+                progress(0.28, desc="Analyzing sign & clock placement...")
+                try:
+                    placement_result = app.placement_analyzer.analyze_placement(
+                        image_rgb, seg_mask, floor_prior,
+                    )
+                    if not placement_result.get("skipped"):
+                        placement_detections = placement_result.get("detections", [])
+                        placement_count = placement_result.get("num_detections", 0)
+                        placement_violations = placement_result.get("num_violations", 0)
+                except Exception as e:
+                    logger.warning(f"Placement analysis failed: {e}")
+
+            progress(0.32, desc="Starting defect XAI analysis...")
 
             def defect_progress(frac, desc=""):
-                progress(0.3 + frac * 0.65, desc=desc)
+                progress(0.32 + frac * 0.63, desc=desc)
 
             results = app.xai_analyzer.run_defect_analysis(
                 image_rgb, blackspot_mask=blackspot_mask,
                 contrast_issues=contrast_issues, seg_mask=seg_mask,
+                placement_detections=placement_detections,
                 progress_callback=defect_progress,
             )
 
@@ -228,6 +270,8 @@ def create_gradio_interface():
                 f"  Blackspot detections: {blackspot_count}",
                 f"  Blackspot coverage: {blackspot_coverage:.2f}%",
                 f"  Contrast failures overlaid: {len(contrast_issues)}",
+                f"  Placement detections: {placement_count} "
+                f"({placement_violations} violating ADA range)",
                 f"  XAI methods applied: {len(results)} (GradCAM, Entropy, Integrated Gradients, Chefer Relevancy)",
             ]
             for key, result in results.items():
@@ -303,7 +347,7 @@ def create_gradio_interface():
             with gr.Tabs(elem_classes="workspace-tabs"):
                 agent_report_in_full = _build_demo_tab(
                     app, analyze_wrapper, xai_wrapper, SAMPLE_IMAGES,
-                    sample_images_available, blackspot_ok,
+                    sample_images_available, blackspot_ok, placement_ok,
                     analysis_state,
                 )
                 _build_xai_tab(
@@ -423,15 +467,15 @@ def _build_team_tab():
 """)
 
 
-def _build_demo_tab(app, analyze_wrapper, xai_wrapper, sample_images, sample_available, blackspot_ok, analysis_state):
+def _build_demo_tab(app, analyze_wrapper, xai_wrapper, sample_images, sample_available, blackspot_ok, placement_ok, analysis_state):
     with gr.TabItem("Live Demo"):
         gr.Markdown("""## How It Works
 
 1. **Upload** a room photo (or select a sample below)
-2. **Click Analyze** — the pipeline runs semantic segmentation (150-class EoMT-DINOv3), blackspot detection (Mask R-CNN), WCAG 2.1 contrast analysis, and optionally 7 Explainable AI methods
-3. **Review results** across tabs: segmentation map, blackspot hazards, contrast issues, XAI visualizations, and a full safety report
+2. **Click Analyze** — the pipeline runs semantic segmentation (150-class EoMT-DINOv3), blackspot detection (Mask R-CNN), WCAG 2.1 contrast analysis, monocular metric depth + ADA sign/clock placement analysis, and optionally 7 Explainable AI methods
+3. **Review results** across tabs: segmentation map, blackspot hazards, contrast issues, sign & clock placement, XAI visualizations, and a full safety report
 
-The system identifies visual hazards that cause falls in Alzheimer's patients — dark floor areas perceived as voids (blackspots) and low-contrast boundaries between surfaces.""")
+The system identifies visual hazards that cause falls in Alzheimer's patients — dark floor areas perceived as voids (blackspots), low-contrast boundaries between surfaces, and signs or clocks placed outside the ADA-recommended 48-60 inch centroid range.""")
 
         with gr.Row(visible=False):
             image_input = gr.Image(label="Upload", type="filepath")
@@ -453,6 +497,12 @@ The system identifies visual hazards that cause falls in Alzheimer's patients �
                     blackspot_threshold = gr.Slider(minimum=0.1, maximum=0.9, value=0.5, step=0.05, label="Blackspot Sensitivity", visible=blackspot_ok)
                     enable_contrast = gr.Checkbox(value=True, label="Contrast Analysis")
                     contrast_threshold = gr.Slider(minimum=3.0, maximum=7.0, value=4.5, step=0.1, label="WCAG Contrast Threshold", info="4.5:1 = WCAG AA, 7:1 = AAA")
+                    enable_placement = gr.Checkbox(
+                        value=placement_ok,
+                        label="Sign & Clock Placement (ADA)",
+                        interactive=placement_ok,
+                        info="Adds ~3-5s on CPU. Requires monocular metric depth model.",
+                    )
 
         gr.Markdown("### Results")
         with gr.Tabs():
@@ -466,6 +516,19 @@ The system identifies visual hazards that cause falls in Alzheimer's patients �
                     gr.Markdown("Blackspot detection model not available in this deployment.")
             with gr.TabItem("Contrast Analysis"):
                 contrast_display = gr.Image(label="WCAG 2.1 contrast ratio analysis", interactive=False, elem_classes="image-output")
+            with gr.TabItem("Sign & Clock Placement"):
+                if placement_ok:
+                    placement_display = gr.Image(
+                        label="ADA-compliant centroid heights (48-60 in). "
+                              "Color: critical/high/medium/ok severity.",
+                        interactive=False, elem_classes="image-output",
+                    )
+                else:
+                    placement_display = gr.Image(visible=False)
+                    gr.Markdown(
+                        "Placement analyzer not available in this deployment "
+                        "(monocular metric depth model failed to load)."
+                    )
             with gr.TabItem("Explainable AI"):
                 xai_auto_html = gr.HTML(
                     value='<div style="text-align:center;padding:40px;color:#6b7280;">'
@@ -494,8 +557,14 @@ The system identifies visual hazards that cause falls in Alzheimer's patients �
 
         analyze_button.click(
             fn=analyze_wrapper,
-            inputs=[image_input_display, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast],
-            outputs=[seg_display, blackspot_display, contrast_display, analysis_report, structured_json_display, analysis_state],
+            inputs=[
+                image_input_display, blackspot_threshold, contrast_threshold,
+                enable_blackspot, enable_contrast, enable_placement,
+            ],
+            outputs=[
+                seg_display, blackspot_display, contrast_display, placement_display,
+                analysis_report, structured_json_display, analysis_state,
+            ],
         ).then(
             fn=auto_xai_wrapper,
             inputs=[image_input_display, enable_xai, analysis_state],
@@ -751,6 +820,23 @@ def _build_structured_json(results: Dict) -> Dict:
             "issues": serialized,
         }
 
+    pl = results.get("placement")
+    if pl:
+        if pl.get("skipped"):
+            data["placement"] = {
+                "skipped": True,
+                "reason": pl.get("reason", "unknown"),
+            }
+        else:
+            data["placement"] = {
+                "count": pl.get("num_detections", 0),
+                "violations": pl.get("num_violations", 0),
+                "calibration": pl.get("calibration_source"),
+                "scale_factor": pl.get("scale_factor", 1.0),
+                "ada_recommended_range_in": pl.get("ada_recommended_range_in"),
+                "detections": pl.get("detections", []),
+            }
+
     return data
 
 
@@ -842,6 +928,49 @@ def _comprehensive_report(results: Dict) -> str:
                     lines.append(f"| {c1_cat.title()} \u2194 {c2_cat.title()} | {ratio} | {c1_str} | {c2_str} |")
                 lines.append("")
 
+    # ── Sign & Clock Placement ──
+    lines.append("---\n")
+    lines.append("## Sign & Clock Placement\n")
+    pl = results.get("placement")
+    placement_violations = []
+    if pl is None:
+        lines.append("*Placement analysis not performed.*\n")
+    elif pl.get("skipped"):
+        reason = pl.get("reason", "unknown")
+        lines.append(f"*Placement analysis skipped — {reason}.*\n")
+    else:
+        n_det = pl.get("num_detections", 0)
+        n_vio = pl.get("num_violations", 0)
+        rng = pl.get("ada_recommended_range_in") or [48, 60]
+        cal = pl.get("calibration_source", "prior")
+        scale = pl.get("scale_factor", 1.0)
+        lines.append(
+            f"**{n_det} detected** · **{n_vio} outside ADA range** "
+            f"({rng[0]:.0f}\u2013{rng[1]:.0f}\") · "
+            f"calibration: *{cal}* (scale {scale:.2f})\n"
+        )
+        detections = pl.get("detections", [])
+        if detections:
+            lines.append("| # | Class | Height (in) | Status | Confidence |")
+            lines.append("|---|-------|-------------|--------|------------|")
+            for d in detections:
+                cls = d["class"]
+                h = d["height_in"]
+                u = d["height_in_uncertainty"]
+                sev = d["severity"]
+                vio = d.get("violation_type")
+                if sev == "ok":
+                    status = "OK"
+                else:
+                    arrow = "\u2193" if vio == "below" else "\u2191"
+                    status = f"{sev.upper()} {arrow}"
+                    placement_violations.append(d)
+                conf = f"{d['confidence'] * 100:.0f}%"
+                lines.append(
+                    f"| {d['id']} | {cls} | {h:.1f} \u00b1 {u:.1f} | {status} | {conf} |"
+                )
+            lines.append("")
+
     # ── Recommendations ──
     lines.append("---\n")
     lines.append("## Recommendations\n")
@@ -864,6 +993,36 @@ def _comprehensive_report(results: Dict) -> str:
         lines.append("- Paint furniture in colors that contrast with floors and walls")
         lines.append("- Add colored tape or markers to furniture edges")
         lines.append("- Install LED strip lighting under furniture edges\n")
+
+    if placement_violations:
+        has_issues = True
+        lines.append("### Sign & Clock Placement Adjustments\n")
+        rng = pl.get("ada_recommended_range_in") or [48, 60]
+        for d in placement_violations:
+            cls = d["class"]
+            h = d["height_in"]
+            vio = d.get("violation_type")
+            if vio == "below":
+                target = rng[0]
+                delta = target - h
+                lines.append(
+                    f"- Raise the {cls} (#{d['id']}) by approximately "
+                    f"{delta:.0f} in to reach the ADA-recommended "
+                    f"{rng[0]:.0f}\u2013{rng[1]:.0f}\" centroid range."
+                )
+            else:
+                target = rng[1]
+                delta = h - target
+                lines.append(
+                    f"- Lower the {cls} (#{d['id']}) by approximately "
+                    f"{delta:.0f} in to reach the ADA-recommended "
+                    f"{rng[0]:.0f}\u2013{rng[1]:.0f}\" centroid range."
+                )
+        lines.append(
+            "- Where possible, mount signs at the lower end of the range "
+            "(closer to 48 in) for residents who use wheelchairs or have "
+            "stooped posture.\n"
+        )
 
     if not has_issues:
         lines.append("Environment appears well-optimized for Alzheimer's care.  ")
