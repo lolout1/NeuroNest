@@ -26,6 +26,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from ..config import (
@@ -47,6 +48,11 @@ from .geometry import (
 
 logger = logging.getLogger(__name__)
 
+# Per-component door bbox must be at least this tall in pixels for the 80-inch
+# reference to be reliable; below this, segmentation noise dominates the
+# measurement and a small mask masquerading as a door produces wild scales.
+_MIN_DOOR_COMPONENT_HEIGHT_PX = 100
+
 
 @dataclass(frozen=True)
 class Calibration:
@@ -62,21 +68,57 @@ class Calibration:
         return self.source != "prior"
 
 
+def _select_calibration_door_mask(seg_mask: np.ndarray) -> Optional[np.ndarray]:
+    """Pick the largest fully-visible door connected component, or None.
+
+    Calibration to the 80-inch reference is only safe when the door is
+    geometrically intact in the frame. We reject components that:
+      - touch the top or bottom image edge (the door is truncated, so the
+        measured height is biased low by an unknown amount)
+      - have a bbox vertical extent below `_MIN_DOOR_COMPONENT_HEIGHT_PX`
+        (a sliver of door peeking through a wall is not a calibration target)
+      - have area below 200 pixels (existing minimum)
+    Among survivors, the largest by pixel area wins.
+    """
+    h, _ = seg_mask.shape[:2]
+    door_pixels = (seg_mask == DOOR_CLASS_ID).astype(np.uint8)
+    if door_pixels.sum() == 0:
+        return None
+    n_components, labels, stats, _ = cv2.connectedComponentsWithStats(
+        door_pixels, connectivity=8
+    )
+
+    best_label, best_area = -1, 0
+    for label in range(1, n_components):
+        x, y, bbox_w, bbox_h, area = stats[label]
+        if area < 200 or bbox_h < _MIN_DOOR_COMPONENT_HEIGHT_PX:
+            continue
+        if y == 0 or (y + bbox_h) >= h:
+            continue
+        if area > best_area:
+            best_area, best_label = area, label
+
+    if best_label < 0:
+        return None
+    return labels == best_label
+
+
 def _measure_door_height_in(
     seg_mask: np.ndarray,
     depth_map: np.ndarray,
     floor_plane: FloorPlane,
     camera: PinholeCamera,
 ) -> Optional[float]:
-    """Measure tallest connected door's height above the floor plane in inches.
+    """Measure the largest fully-visible door's height above the floor plane (inches).
 
-    Approach: back-project all door pixels, take the percentile-pair (5%, 95%)
-    along the floor-plane-perpendicular direction. The 95th percentile gives the
-    door top, the 5th gives its bottom near the floor (robust to feet not being
-    exactly on the floor due to depth noise).
+    Per-component selection (`_select_calibration_door_mask`) eliminates
+    truncated and sliver doors before measurement. On the surviving
+    component, the percentile-pair (5%, 95%) along the floor-plane-
+    perpendicular direction gives a robust top–bottom distance even with
+    depth noise at the door's feet.
     """
-    door_mask = (seg_mask == DOOR_CLASS_ID)
-    if door_mask.sum() < 200:    # too small to be a real door
+    door_mask = _select_calibration_door_mask(seg_mask)
+    if door_mask is None:
         return None
 
     pts = back_project_mask(door_mask, depth_map, camera, max_points=4000)
@@ -180,14 +222,18 @@ def calibrate_scale(
                 reference_measured_in=ceiling_measured,
                 confidence=0.7,
             )
-        # Ceiling measurement outside plausible range — derive a scale that
-        # pulls it to the nearest plausible bound (108" residential standard).
-        target = 108.0
+        # Ceiling measurement outside plausible range — clamp to the nearest
+        # plausible bound (84" minimum / 144" maximum residential), not a
+        # midpoint, so a 145" measurement maps to 144" rather than to 108".
+        if ceiling_measured < CEILING_MIN_REFERENCE_IN:
+            target = CEILING_MIN_REFERENCE_IN
+        else:
+            target = CEILING_MAX_REFERENCE_IN
         scale = target / ceiling_measured
         if CALIBRATION_SCALE_MIN <= scale <= CALIBRATION_SCALE_MAX:
             logger.info(
                 f"Calibration: ceiling measured={ceiling_measured:.1f}\" "
-                f"out of band, target {target}\" → scale={scale:.3f}"
+                f"out of band, clamp-target {target}\" → scale={scale:.3f}"
             )
             return Calibration(
                 scale_factor=scale,
@@ -196,6 +242,11 @@ def calibrate_scale(
                 reference_measured_in=ceiling_measured,
                 confidence=0.5,
             )
+        logger.warning(
+            f"Calibration: ceiling measured={ceiling_measured:.1f}\" "
+            f"clamp-target={target}\" → scale={scale:.3f} outside "
+            f"[{CALIBRATION_SCALE_MIN}, {CALIBRATION_SCALE_MAX}], rejecting"
+        )
 
     # --- No reference found; trust the depth model as-is ---
     logger.info("Calibration: no door/ceiling reference; using depth as-is (prior)")

@@ -139,7 +139,9 @@ def back_project_mask(
         ys, xs = ys[idx], xs[idx]
 
     zs = depth_map[ys, xs]
-    valid = zs > 0
+    # Reject non-positive AND non-finite depths; inf/NaN would corrupt the
+    # SVD step in fit_floor_plane.
+    valid = (zs > 0) & np.isfinite(zs)
     if not np.any(valid):
         return np.zeros((0, 3), dtype=np.float64)
     ys, xs, zs = ys[valid], xs[valid], zs[valid]

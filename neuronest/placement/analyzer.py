@@ -266,10 +266,10 @@ class VerticalPlacementAnalyzer:
             depth_at_centroid, depth_std = sample_depth_at(
                 depth_map, cx, cy, window=5
             )
-            if depth_at_centroid <= 0:
+            if not np.isfinite(depth_at_centroid) or depth_at_centroid <= 0:
                 logger.warning(
                     f"Placement: instance {idx} ({_class_label(inst.class_id)}) "
-                    "has non-positive depth at centroid; skipping"
+                    f"has invalid depth at centroid ({depth_at_centroid}); skipping"
                 )
                 continue
 
