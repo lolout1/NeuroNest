@@ -30,6 +30,7 @@ class AnalysisContext:
     segmentation: Optional[Dict[str, Any]] = None
     blackspot: Optional[Dict[str, Any]] = None
     contrast: Optional[Dict[str, Any]] = None
+    placement: Optional[Dict[str, Any]] = None
     statistics: Dict[str, Any] = field(default_factory=dict)
     xai_report: Optional[str] = None
 
@@ -41,13 +42,17 @@ class AnalysisContext:
             segmentation=results.get("segmentation"),
             blackspot=results.get("blackspot"),
             contrast=results.get("contrast"),
+            placement=results.get("placement"),
             statistics=results.get("statistics", {}),
             xai_report=results.get("xai_report"),
         )
 
     @property
     def has_analysis(self) -> bool:
-        return any([self.segmentation, self.blackspot, self.contrast, self.xai_report])
+        return any([
+            self.segmentation, self.blackspot, self.contrast,
+            self.placement, self.xai_report,
+        ])
 
     def serialize(self) -> str:
         if not self.has_analysis:
@@ -59,6 +64,8 @@ class AnalysisContext:
             sections.append(self._serialize_blackspot())
         if self.contrast:
             sections.append(self._serialize_contrast())
+        if self.placement:
+            sections.append(self._serialize_placement())
         safety_flags = self._serialize_safety_surfaces()
         if safety_flags:
             sections.append(safety_flags)
@@ -154,6 +161,40 @@ class AnalysisContext:
                 )
         return "\n".join(lines)
 
+    def _serialize_placement(self) -> str:
+        p = self.placement
+        if p.get("skipped"):
+            return (
+                "[SIGN & CLOCK PLACEMENT] Skipped — "
+                f"{p.get('reason', 'unknown')}"
+            )
+        rng = p.get("ada_recommended_range_in") or [48, 60]
+        lines = [
+            "[SIGN & CLOCK PLACEMENT] ADA centroid range "
+            f"{rng[0]:.0f}-{rng[1]:.0f} in",
+            f"  Detections: {p.get('num_detections', 0)}",
+            f"  Violations: {p.get('num_violations', 0)}",
+            f"  Scale calibration: {p.get('scale_factor', 1.0):.3f} "
+            f"(source: {p.get('calibration_source', 'prior')})",
+        ]
+        detections = p.get("detections", [])
+        if detections:
+            lines.append("  Individual detections:")
+            for det in detections[:10]:
+                cls = det.get("class", "?")
+                h = det.get("height_in", 0)
+                u = det.get("height_in_uncertainty", 0)
+                sev = det.get("severity", "unknown")
+                vio = det.get("violation_type")
+                tag = f" ({vio})" if vio else ""
+                conf = det.get("confidence", 0)
+                lines.append(
+                    f"    - {cls} #{det.get('id', '?')}: "
+                    f"{h:.1f}\" \u00b1 {u:.1f} \u2014 {sev}{tag} "
+                    f"(conf={conf:.2f})"
+                )
+        return "\n".join(lines)
+
     def _serialize_safety_surfaces(self) -> str:
         mask = self.segmentation.get("mask") if self.segmentation else None
         if mask is None:
@@ -201,6 +242,18 @@ def build_system_prompt(context: AnalysisContext) -> str:
         "to someone with visual-perceptual impairment.\n"
         "- Provide actionable remediation: specific changes like adding contrast tape, "
         "improving lighting, replacing dark flooring, using contrasting furniture.\n"
+        "- For sign and clock placement findings: ADA and dementia-inclusive design "
+        "recommend mounting signs and clocks so their centroid sits between 48 and 60 "
+        "inches above the finished floor. Heights below 48 inches are unreachable by "
+        "standing patients and easily ignored; heights above 60 inches exceed the "
+        "typical visual scan range of seated, shorter, or stooped individuals. Each "
+        "reported height has an inherent measurement uncertainty (the \u00b1 value) — "
+        "defer judgement when uncertainty is comparable to the deviation. When a "
+        "violation is reported, recommend the specific adjustment in inches "
+        "(e.g., 'lower the bathroom sign by 12 inches'). Calibration source 'door' "
+        "is the most reliable scale reference; 'ceiling' is a fallback; 'prior' "
+        "means no calibration object was found and the height should be treated "
+        "as approximate.\n"
         "- For XAI (Explainable AI) findings: explain what the model is focusing on and how "
         "confident its predictions are. High entropy at boundaries means the model struggles "
         "to distinguish adjacent surfaces — this correlates with low-contrast visibility for "

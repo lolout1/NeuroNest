@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 class DefectMixin:
     """Defect overlay and defect-focused XAI analysis."""
 
-    def _overlay_defects(self, blended, blackspot_mask, contrast_issues=None, seg_mask=None):
+    def _overlay_defects(
+        self,
+        blended,
+        blackspot_mask,
+        contrast_issues=None,
+        seg_mask=None,
+        placement_detections=None,
+    ):
         vis = blended.copy()
         h, w = vis.shape[:2]
 
@@ -60,11 +67,39 @@ class DefectMixin:
                             cv2.drawContours(vis, bd_contours, -1, color, 2)
                             break
 
+        if placement_detections:
+            placement_color = (180, 80, 220)   # purple — distinct from red/amber
+            for det in placement_detections:
+                if det.get("severity") == "ok":
+                    continue
+                bbox = det.get("bbox")
+                if not bbox:
+                    continue
+                x1, y1, x2, y2 = bbox
+                # Clamp bbox to current visualization size (may differ from
+                # original if upstream resized for display).
+                x1 = max(0, min(int(x1), w - 1))
+                y1 = max(0, min(int(y1), h - 1))
+                x2 = max(0, min(int(x2), w - 1))
+                y2 = max(0, min(int(y2), h - 1))
+                cv2.rectangle(vis, (x1, y1), (x2, y2), placement_color, 3, cv2.LINE_AA)
+                vio = det.get("violation_type")
+                tag = "TOO LOW" if vio == "below" else "TOO HIGH"
+                label = f"{int(round(det.get('height_in', 0)))}\" {tag}"
+                cv2.putText(
+                    vis, label, (x1, max(y1 - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA,
+                )
+                cv2.putText(
+                    vis, label, (x1, max(y1 - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, placement_color, 1, cv2.LINE_AA,
+                )
+
         return vis
 
     def run_defect_analysis(
         self, image, blackspot_mask, contrast_issues=None,
-        seg_mask=None, progress_callback=None,
+        seg_mask=None, placement_detections=None, progress_callback=None,
     ):
         logger.info("[XAI] Running defect-focused analysis...")
         t0 = time.perf_counter()
@@ -94,13 +129,15 @@ class DefectMixin:
                 raw = r.get("_blended_raw")
                 if raw is not None:
                     defect_vis = self._overlay_defects(
-                        raw, blackspot_mask, contrast_issues, seg_mask
+                        raw, blackspot_mask, contrast_issues, seg_mask,
+                        placement_detections=placement_detections,
                     )
                     info = METHOD_INFO.get(key, {})
                     r["defect_visualization"] = self._annotate(
                         defect_vis, key,
                         f"{info.get('title', key)} | Defect Overlay",
-                        f"Target: {cn} | Blackspots: red | Contrast: amber",
+                        f"Target: {cn} | Blackspots: red | Contrast: amber | "
+                        "Placement: purple",
                     )
                 results[key] = r
             except Exception as e:
