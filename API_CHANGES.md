@@ -69,13 +69,30 @@ if placement and not placement.get("skipped"):
 
 ### Skipped placement analysis
 
-If the image lacks any sign/clock pixels, or the floor isn't visible enough to fit a plane, the field is:
+If the analyzer cannot run, the field is one of:
 
 ```json
-"placement": { "skipped": true, "reason": "no floor visible" }
+"placement": { "skipped": true, "reason": "no sign or clock detected" }
+"placement": { "skipped": true, "reason": "floor not visible enough" }
+"placement": { "skipped": true, "reason": "could not fit floor plane" }
+"placement": { "skipped": true, "reason": "placement model unavailable" }
 ```
 
 Always check `placement.get("skipped")` before iterating `detections`.
+
+### `/analyze_wrapper` tuple positions
+
+The Defect 3 work appends an additive 6th element (placement visualization image) at index `[5]`, leaving every existing position unchanged. Five-input clients keep working; the wrapper still accepts five inputs `(file, blackspot_threshold, contrast_threshold, enable_blackspot, enable_contrast)` and there is no `enable_placement` input — placement runs whenever sign/clock pixels are detected, gated internally by a lazy short-circuit so rooms with neither pay no extra latency.
+
+```
+[0] Image  — segmentation visualization
+[1] Image  — blackspot visualization
+[2] Image  — contrast visualization
+[3] str    — markdown report
+[4] dict   — STRUCTURED JSON  (now contains optional "placement" key)
+[5] Image  — placement visualization (NEW; null when no signs/clocks)
+[6] dict   — internal pipeline state (not for external consumption)
+```
 
 ---
 
