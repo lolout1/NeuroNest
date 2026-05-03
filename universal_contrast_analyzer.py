@@ -19,9 +19,33 @@ class UniversalContrastAnalyzer:
     Ensures proper visibility for elderly individuals with Alzheimer's or dementia.
     """
     
-    def __init__(self, wcag_threshold: float = 4.5):
+    def __init__(
+        self,
+        wcag_threshold: float = 4.5,
+        use_local_boundary_sampling: bool = True,
+        boundary_band_pixels: int = 8,
+        min_boundary_band_pixels: int = 50,
+    ):
         self.wcag_threshold = wcag_threshold
-        
+
+        # Local-boundary sampling (Phase A1).
+        # Dementia-friendly contrast depends on the colors that meet AT the
+        # boundary — not the segment-wide average, which gets dominated by
+        # wainscoting / shadow zones / patterned surfaces and produces useless
+        # midtones. When enabled, per-pair colors are sampled from a thin
+        # band around each pair's boundary instead of the full segment mask.
+        self.use_local_boundary_sampling = bool(use_local_boundary_sampling)
+        self.boundary_band_pixels = int(boundary_band_pixels)
+        self.min_boundary_band_pixels = int(min_boundary_band_pixels)
+        if self.boundary_band_pixels < 1:
+            raise ValueError(
+                f"boundary_band_pixels must be >= 1, got {self.boundary_band_pixels}"
+            )
+        if self.min_boundary_band_pixels < 1:
+            raise ValueError(
+                f"min_boundary_band_pixels must be >= 1, got {self.min_boundary_band_pixels}"
+            )
+
         # ADE20K semantic class mappings for indoor care environments.
         # Each ID verified against ade20k_classes.py (0-indexed, 150 classes).
         # Classes not listed here default to 'unknown' and get standard 3:1 checks.
@@ -276,7 +300,34 @@ class UniversalContrastAnalyzer:
                 return np.median(masked_pixels[inlier_mask], axis=0).astype(int)
 
         return np.median(masked_pixels, axis=0).astype(int)
-    
+
+    def _sample_boundary_band_color(
+        self,
+        image: np.ndarray,
+        segment_mask: np.ndarray,
+        boundary_mask: np.ndarray,
+        fallback_color: np.ndarray,
+    ) -> np.ndarray:
+        """Sample a segment's color within `boundary_band_pixels` of the pair boundary.
+
+        The boundary mask carries pixels from both sides of the pair (see
+        find_adjacent_segments). Dilating it by the band radius and intersecting
+        with the segment isolates the segment's pixels nearest the boundary —
+        the colors that actually determine perceived contrast at the edge.
+        Falls back to the precomputed segment-mean color when the band is too
+        sparse (small segment, very short shared boundary).
+        """
+        radius = self.boundary_band_pixels
+        k = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        band = cv2.dilate(boundary_mask.astype(np.uint8), kernel) > 0
+        band &= segment_mask
+
+        if int(band.sum()) < self.min_boundary_band_pixels:
+            return fallback_color
+
+        return self.extract_dominant_color(image, band)
+
     def find_adjacent_segments(self, segmentation: np.ndarray) -> Dict[Tuple[int, int], np.ndarray]:
         """Find all pairs of adjacent segments using vectorized numpy operations.
 
@@ -471,9 +522,23 @@ class UniversalContrastAnalyzer:
 
             results['statistics']['analyzed_pairs'] += 1
 
+            # Resolve per-pair colors. Local-boundary sampling (Phase A1) gets
+            # the colors that actually meet at the edge; segment-mean is the
+            # fallback for tiny shared boundaries.
+            if self.use_local_boundary_sampling:
+                color1 = self._sample_boundary_band_color(
+                    image, info1['mask'], boundary, info1['color']
+                )
+                color2 = self._sample_boundary_band_color(
+                    image, info2['mask'], boundary, info2['color']
+                )
+            else:
+                color1 = info1['color']
+                color2 = info2['color']
+
             # Check contrast sufficiency
             is_sufficient, severity = self.is_contrast_sufficient(
-                info1['color'], info2['color'],
+                color1, color2,
                 info1['category'], info2['category']
             )
 
@@ -481,9 +546,9 @@ class UniversalContrastAnalyzer:
                 results['statistics']['low_contrast_pairs'] += 1
 
                 # Calculate detailed metrics
-                wcag_ratio = self.calculate_wcag_contrast(info1['color'], info2['color'])
-                hue_diff = self.calculate_hue_difference(info1['color'], info2['color'])
-                sat_diff = self.calculate_saturation_difference(info1['color'], info2['color'])
+                wcag_ratio = self.calculate_wcag_contrast(color1, color2)
+                hue_diff = self.calculate_hue_difference(color1, color2)
+                sat_diff = self.calculate_saturation_difference(color1, color2)
 
                 # Check if it's a floor-object issue
                 is_floor_object = (
@@ -507,8 +572,8 @@ class UniversalContrastAnalyzer:
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
                     'colors': (
-                        self._rgb_to_color_info(info1['color']),
-                        self._rgb_to_color_info(info2['color']),
+                        self._rgb_to_color_info(color1),
+                        self._rgb_to_color_info(color2),
                     ),
                     'wcag_ratio': float(wcag_ratio),
                     'hue_difference': float(hue_diff),
