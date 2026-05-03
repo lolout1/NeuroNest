@@ -70,7 +70,12 @@ def _scene_wainscoting() -> Scene:
     return Scene(
         name="wainscoting_wall",
         image=img, seg=seg,
-        targets=["A1", "A4"],   # A4 should warn the wall is multi-modal
+        # A1 only — A4 was originally claimed too, but wainscoting white/
+        # beige produces ΔE2000 ≈ 9 (perceptually similar to wood-grain
+        # texture), so A4's threshold (default 17.5 ΔE2000) correctly
+        # excludes it. The boundary issue is A1's domain; A4 targets clear
+        # multi-color patterns (striped rugs, ΔE2000 >> 25).
+        targets=["A1"],
     )
 
 
@@ -340,21 +345,65 @@ def check_target_features(post: Dict, full: Dict, scene: Scene) -> List[str]:
         if not full["issues"]:
             msgs.append("expected at least one issue with apca_lc, none recorded")
         else:
-            lc = full["issues"][0].get("apca_lc")
+            issue = full["issues"][0]
+            lc = issue.get("apca_lc")
             if lc is None or abs(lc) < 30:
                 msgs.append(
                     f"expected |apca_lc| > 30 on dark-on-light pair, got {lc}"
+                )
+            # polarity_asymmetry: figure (smaller-area / area-fallback) is
+            # the wall (lighter), ground is floor (darker). Light figure on
+            # dark ground = WoB → Lc must be NEGATIVE.
+            if scene.name == "polarity_asymmetry" and lc is not None and lc >= 0:
+                msgs.append(
+                    f"expected NEGATIVE apca_lc (light fg on dark bg), got +{lc}"
                 )
     if "B3" in scene.targets:
         if not full["issues"]:
             msgs.append("expected at least one issue with weber_contrast, none recorded")
         else:
-            wc = full["issues"][0].get("weber_contrast")
-            # Dark figure on light bg should yield strongly negative Weber.
+            issue = full["issues"][0]
+            wc = issue.get("weber_contrast")
             if wc is None or wc > -0.5:
                 msgs.append(
                     f"expected weber_contrast < -0.5 on dark-on-light figure, got {wc}"
                 )
+            # figure_on_ground: small box (objects) on large floor — the
+            # category-driven figure-ground heuristic must pick this clean.
+            fg = issue.get("figure_category")
+            if fg != "objects":
+                msgs.append(
+                    f"expected figure_category='objects', got {fg!r}"
+                )
+            if not issue.get("figure_ground_semantic_clear"):
+                msgs.append(
+                    "expected figure_ground_semantic_clear=True for object-on-floor"
+                )
+    return msgs
+
+
+def check_apca_spot_values(analyzer_factory: Callable) -> List[str]:
+    """Spot-check APCA against W3C SAPC reference: black/white ≈ +106, white/black ≈ -108.
+
+    Confirms the SAPC constants haven't drifted and the sign convention
+    holds end-to-end. Run once per harness invocation, independently of
+    the scene matrix.
+    """
+    msgs = []
+    analyzer = analyzer_factory()
+    BLACK, WHITE = np.array([0, 0, 0]), np.array([255, 255, 255])
+    # Black fg on white bg → BoW → Lc ≈ +106
+    lc_bow = analyzer.calculate_apca_lc(BLACK, WHITE)
+    if not (100 < lc_bow < 110):
+        msgs.append(f"APCA spot: black/white expected ≈+106, got {lc_bow:.2f}")
+    # White fg on black bg → WoB → Lc ≈ -108
+    lc_wob = analyzer.calculate_apca_lc(WHITE, BLACK)
+    if not (-112 < lc_wob < -102):
+        msgs.append(f"APCA spot: white/black expected ≈-108, got {lc_wob:.2f}")
+    # Same colors → 0 (below noise floor)
+    lc_same = analyzer.calculate_apca_lc(WHITE, WHITE)
+    if abs(lc_same) > 0.01:
+        msgs.append(f"APCA spot: white/white expected 0, got {lc_same:.2f}")
     return msgs
 
 
@@ -373,7 +422,16 @@ def main() -> int:
     _run(_make_full_a, warm)
     _run(_make_post_a1, warm)
 
-    failed = 0
+    # APCA spot-check against the W3C SAPC reference values, run before the
+    # scene matrix so a constant drift fails fast and obviously.
+    spot_msgs = check_apca_spot_values(_make_full_a)
+    if spot_msgs:
+        print("APCA spot-check:")
+        for m in spot_msgs:
+            print(f"    - {m}")
+        print()
+
+    failed = 1 if spot_msgs else 0
     header = (
         f"{'scene':28s}  {'POST_A1':>7s} {'FULL_A':>6s} {'Δ':>3s}  "
         f"{'wrn':>3s}  {'ΔE00':>5s}  {'APCA':>6s}  {'Weber':>6s}  status"

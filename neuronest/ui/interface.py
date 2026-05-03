@@ -815,12 +815,24 @@ def _build_structured_json(results: Dict) -> Dict:
             # red-green isoluminant pairs entirely; ΔE2000 surfaces them.
             if "delta_e2000" in issue:
                 entry["delta_e2000"] = round(float(issue["delta_e2000"]), 2)
-            # Phase B1 — APCA Lc, polarity-aware perceptual lightness contrast.
+            # Phase B1 — APCA Lc, sign-bearing perceptual contrast.
             if "apca_lc" in issue:
                 entry["apca_lc"] = round(float(issue["apca_lc"]), 2)
             # Phase B3 — Weber contrast (figure / background asymmetry).
             if "weber_contrast" in issue:
                 entry["weber_contrast"] = round(float(issue["weber_contrast"]), 3)
+            # Phase B figure-ground assignment — readers need this to
+            # interpret the SIGN on apca_lc / weber_contrast. When
+            # figure_ground_semantic_clear is False, the sign is conventional
+            # (both segments are co-planar surfaces or both figures).
+            if "figure_category" in issue:
+                entry["figure_category"] = issue["figure_category"]
+            if "ground_category" in issue:
+                entry["ground_category"] = issue["ground_category"]
+            if "figure_ground_semantic_clear" in issue:
+                entry["figure_ground_semantic_clear"] = bool(
+                    issue["figure_ground_semantic_clear"]
+                )
             serialized.append(entry)
         contrast_block = {
             "total_issues": stats.get("low_contrast_pairs", 0),
@@ -839,7 +851,11 @@ def _build_structured_json(results: Dict) -> Dict:
             {
                 "segment_id": int(w["segment_id"]),
                 "category": w["category"],
+                # CIE76 (screening) and CIEDE2000 (confirmation) surface
+                # different aspects of perceptual difference; both are
+                # emitted so consumers can tighten thresholds.
                 "delta_e": round(float(w["delta_e"]), 2),
+                "delta_e2000": round(float(w.get("delta_e2000", 0.0)), 2),
                 "minority_share": round(float(w["minority_share"]), 3),
                 "primary_color": w["primary_color"],
                 "secondary_color": w["secondary_color"],

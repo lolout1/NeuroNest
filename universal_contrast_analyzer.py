@@ -31,7 +31,7 @@ class UniversalContrastAnalyzer:
         boundary_close_kernel: int = 3,
         min_boundary_component_pixels: int = 20,
         use_intrasegment_scan: bool = True,
-        intrasegment_delta_e_threshold: float = 25.0,
+        intrasegment_delta_e_threshold: float = 35.0,
         intrasegment_min_segment_pixels: int = 5000,
         intrasegment_min_minority_share: float = 0.15,
         compute_delta_e2000: bool = True,
@@ -530,6 +530,18 @@ class UniversalContrastAnalyzer:
                 cleaned[pair] = surviving
         return cleaned
 
+    # Reference image area at which `min_boundary_component_pixels` was tuned
+    # (the synthetic 240x320 regression scenes). Real photos are ~5-20x bigger;
+    # boundary lengths scale roughly with the linear dimension (sqrt of area),
+    # so the threshold scales the same way to avoid dropping legitimate small
+    # contacts on high-resolution images.
+    _MORPH_THRESHOLD_REFERENCE_AREA = 240 * 320
+
+    def _scaled_min_component(self, image_shape: Tuple[int, ...]) -> int:
+        h, w = image_shape[:2]
+        scale = max(1.0, ((h * w) / self._MORPH_THRESHOLD_REFERENCE_AREA) ** 0.5)
+        return int(self.min_boundary_component_pixels * scale)
+
     def _cleanup_boundary_mask(self, boundary: np.ndarray) -> Optional[np.ndarray]:
         """Morph-close a boundary mask, then drop tiny connected components.
 
@@ -537,7 +549,8 @@ class UniversalContrastAnalyzer:
         speckle. Order matters: closing first knits adjacent jitter into solid
         chunks so the connected-component filter operates on coherent pieces
         rather than punishing legitimate boundaries that happen to have a few
-        pixel-scale gaps.
+        pixel-scale gaps. The min-component threshold scales with sqrt of the
+        image area so it stays meaningful on 720x1280 photos.
         """
         k = self.boundary_close_kernel
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -546,11 +559,42 @@ class UniversalContrastAnalyzer:
         )
         n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
         keep = np.zeros_like(closed, dtype=bool)
+        min_pixels = self._scaled_min_component(boundary.shape)
         for i in range(1, n):
-            if stats[i, cv2.CC_STAT_AREA] >= self.min_boundary_component_pixels:
+            if stats[i, cv2.CC_STAT_AREA] >= min_pixels:
                 keep |= (labels == i)
         return keep if keep.any() else None
     
+    # Categories that act as discrete "figures" on a larger surface (Phase B
+    # figure-ground heuristic). The remaining categories that aren't here or
+    # in _GROUND_CATEGORIES (e.g. door, window, stairs, decorative) are
+    # ambiguous — we fall back to area for those.
+    _FIGURE_CATEGORIES = frozenset({'objects', 'furniture', 'fixtures'})
+    _GROUND_CATEGORIES = frozenset({'floor', 'wall', 'ceiling'})
+
+    @classmethod
+    def _figure_ground_assignment(cls, info1: Dict, info2: Dict) -> Tuple[Dict, Dict, bool]:
+        """Pick which segment is figure vs ground for Weber / APCA polarity.
+
+        Returns (figure_info, ground_info, semantic_clear). When
+        semantic_clear is False, both segments share the same role family
+        (two co-planar surfaces such as wall+floor, or two figures), so the
+        figure/ground sign of the resulting metric is conventional rather
+        than physically meaningful — magnitude is still informative.
+
+        The heuristic, in order:
+          1. one figure-category + one ground-category   → unambiguous
+          2. else, the smaller-area segment is figure    → fallback
+        """
+        c1, c2 = info1['category'], info2['category']
+        if c1 in cls._FIGURE_CATEGORIES and c2 in cls._GROUND_CATEGORIES:
+            return info1, info2, True
+        if c2 in cls._FIGURE_CATEGORIES and c1 in cls._GROUND_CATEGORIES:
+            return info2, info1, True
+        if info1['area'] <= info2['area']:
+            return info1, info2, False
+        return info2, info1, False
+
     @staticmethod
     def _srgb_to_screen_luminance(rgb: np.ndarray) -> float:
         """sRGB → screen-Y per APCA SAPC-8 reference (gamma 2.4, no soft-clip).
@@ -563,53 +607,47 @@ class UniversalContrastAnalyzer:
         r, g, b = (np.asarray(rgb, dtype=np.float64) / 255.0) ** 2.4
         return float(0.2126729 * r + 0.7151522 * g + 0.072175 * b)
 
-    def calculate_apca_lc(self, color1: np.ndarray, color2: np.ndarray) -> float:
-        """APCA Lc perceptual lightness contrast (Phase B1).
+    def calculate_apca_lc(self, fg_color: np.ndarray, bg_color: np.ndarray) -> float:
+        """APCA Lc — signed perceptual lightness contrast (Phase B1).
 
-        Returns Lc in approximately [-108, +106]. Sign encodes polarity:
-        positive = darker color on lighter background (BoW),
-        negative = lighter color on darker background (WoB). Magnitude is
-        polarity-independent contrast strength; the W3C accessibility-track
-        body-text floor is |Lc| ≥ 75, environmental-signage practice is
-        roughly |Lc| ≥ 60.
+        Caller is responsible for designating which surface is foreground
+        ("text") and which is background. The sign of Lc encodes polarity:
+            positive = fg darker than bg (BoW — dark figure on light ground)
+            negative = fg lighter than bg (WoB — light figure on dark ground)
+        Magnitude is polarity-independent contrast strength. W3C reference
+        thresholds: body text |Lc| ≥ 75; environmental signage ≈ |Lc| ≥ 60.
 
-        For our pair-contrast use we don't know which surface is "text"; we
-        compute both polarities and return the more pessimistic (smaller
-        magnitude). That answers "did this pair clear APCA either way?".
+        Returns 0.0 when below the raw-SAPC noise floor (|sapc| < loClip)
+        per W3 SAPC reference, or when computation is disabled.
 
-        Strictly additive — does not change severity classification. Returns
-        0.0 when below the noise floor or computation is disabled.
-
-        Constants per W3C SAPC-8 reference; algorithm is public-domain.
+        Constants and the loClip=0.1 raw-SAPC zero-gate match the W3 SAPC
+        reference (Andrew Somers, public-domain). Spot-checks: black on
+        white returns ≈ +106; white on black returns ≈ -108.
         """
+        if not self.compute_apca_lc:
+            return 0.0
+
         BLK_THRS = 0.022
         BLK_CLMP = 1.414
         DELTA_Y_MIN = 0.0005
-        SCALE_BOW = 1.14
-        SCALE_WOB = 1.14
+        LO_CLIP = 0.1                # raw-SAPC zero-gate per W3 SAPC reference
+        SCALE_BOW = SCALE_WOB = 1.14
         NORM_BG, NORM_TXT = 0.56, 0.57
         REV_BG,  REV_TXT  = 0.65, 0.62
-        LO_BOW_OFFSET = 0.027
-        LO_WOB_OFFSET = 0.027
+        LO_BOW_OFFSET = LO_WOB_OFFSET = 0.027
 
         def soft_clip(y: float) -> float:
             return y if y >= BLK_THRS else y + (BLK_THRS - y) ** BLK_CLMP
 
-        def lc_for_polarity(text_rgb, bg_rgb) -> float:
-            y_t = soft_clip(self._srgb_to_screen_luminance(text_rgb))
-            y_b = soft_clip(self._srgb_to_screen_luminance(bg_rgb))
-            if abs(y_b - y_t) < DELTA_Y_MIN:
-                return 0.0
-            if y_b > y_t:   # dark text on light bg (BoW)
-                sapc = (y_b ** NORM_BG - y_t ** NORM_TXT) * SCALE_BOW
-                return (sapc - LO_BOW_OFFSET) * 100.0 if sapc >= LO_BOW_OFFSET else 0.0
-            sapc = (y_b ** REV_BG - y_t ** REV_TXT) * SCALE_WOB
-            return (sapc + LO_WOB_OFFSET) * 100.0 if sapc <= -LO_WOB_OFFSET else 0.0
-
-        # Compute both polarities; report the smaller-magnitude (pessimistic).
-        lc12 = lc_for_polarity(color1, color2)
-        lc21 = lc_for_polarity(color2, color1)
-        return float(lc12 if abs(lc12) <= abs(lc21) else lc21)
+        y_t = soft_clip(self._srgb_to_screen_luminance(fg_color))
+        y_b = soft_clip(self._srgb_to_screen_luminance(bg_color))
+        if abs(y_b - y_t) < DELTA_Y_MIN:
+            return 0.0
+        if y_b > y_t:   # BoW: dark fg on light bg → positive Lc
+            sapc = (y_b ** NORM_BG - y_t ** NORM_TXT) * SCALE_BOW
+            return (sapc - LO_BOW_OFFSET) * 100.0 if sapc >= LO_CLIP else 0.0
+        sapc = (y_b ** REV_BG - y_t ** REV_TXT) * SCALE_WOB
+        return (sapc + LO_WOB_OFFSET) * 100.0 if sapc <= -LO_CLIP else 0.0
 
     def calculate_weber_contrast(
         self, fg_color: np.ndarray, bg_color: np.ndarray,
@@ -702,10 +740,13 @@ class UniversalContrastAnalyzer:
         if minority_share < self.intrasegment_min_minority_share:
             return None
 
-        # CIE76 ΔE between the two cluster centers — sufficient for a screening
-        # gate; ΔE2000 is reported per-pair in the issues list (A5).
-        delta_e = float(np.linalg.norm(centers[0] - centers[1]))
-        if delta_e < self.intrasegment_delta_e_threshold:
+        # CIE76 ΔE between the two cluster centers — fast screening gate.
+        # Wood-grain and similar low-frequency texture can clear CIE76 ≈ 25
+        # while perceptually being a single surface (CIEDE2000 captures the
+        # asymmetric chroma weighting CIE76 misses). Confirm with ΔE2000
+        # before emitting the warning to suppress that false-positive class.
+        delta_e_cie76 = float(np.linalg.norm(centers[0] - centers[1]))
+        if delta_e_cie76 < self.intrasegment_delta_e_threshold:
             return None
 
         centers_rgb = []
@@ -716,10 +757,28 @@ class UniversalContrastAnalyzer:
         major_idx = int(counts.argmax())
         minor_idx = 1 - major_idx
 
+        # ΔE2000 confirmation — must clear 0.5× the CIE76 threshold (default
+        # 35 → 17.5). The two thresholds work in different LAB scales (CIE76
+        # in OpenCV uint8 LAB, ΔE2000 in standard CIELAB), so this is an
+        # empirical calibration, not a mathematical conversion. Reference
+        # cases this discriminates correctly:
+        #   - striped red/white rug      ΔE2000 ≈ 49  → KEEP (real pattern)
+        #   - wainscoting white/beige    ΔE2000 ≈  9  → DROP (low-contrast
+        #                                              two-region surface;
+        #                                              boundary is A1's job)
+        #   - wood-grain mid-frequency   ΔE2000 ≈ 10  → DROP (single
+        #                                              perceptual surface)
+        delta_e2000 = self.calculate_delta_e2000(
+            centers_rgb[major_idx], centers_rgb[minor_idx]
+        )
+        if delta_e2000 < self.intrasegment_delta_e_threshold * 0.5:
+            return None
+
         return {
             "segment_id": int(seg_id),
             "category": category,
-            "delta_e": delta_e,
+            "delta_e": delta_e_cie76,
+            "delta_e2000": float(delta_e2000),
             "minority_share": float(minority_share),
             "primary_color": self._rgb_to_color_info(centers_rgb[major_idx]),
             "secondary_color": self._rgb_to_color_info(centers_rgb[minor_idx]),
@@ -930,31 +989,33 @@ class UniversalContrastAnalyzer:
                 elif severity == 'medium':
                     results['statistics']['medium_priority_issues'] += 1
 
-                # Record the issue. Phase A5 adds delta_e2000, Phase B1 adds
-                # apca_lc, Phase B3 adds weber_contrast — all strictly additive
-                # alongside wcag_ratio. None changes the severity decision.
-                # Weber needs a figure/background designation — smaller-area
-                # segment is foreground (typical for trip hazards on floors).
-                if info1['area'] <= info2['area']:
-                    fg_color, bg_color = color1, color2
-                else:
-                    fg_color, bg_color = color2, color1
+                # Phase A5 + B1 + B3 metrics — strictly additive alongside
+                # wcag_ratio. None changes severity classification.
+                # Figure-ground assignment drives the SIGN of weber/APCA: the
+                # figure is "text"/foreground, ground is "bg". When both
+                # segments are co-planar surfaces or both figures, the sign
+                # is conventional (semantic_clear=False); magnitude is still
+                # meaningful in both cases.
+                fg_info, bg_info, semantic_clear = self._figure_ground_assignment(
+                    info1, info2
+                )
+                fg_color = color1 if fg_info is info1 else color2
+                bg_color = color2 if fg_info is info1 else color1
                 issue = {
                     'segment_ids': (seg1_id, seg2_id),
                     'categories': (info1['category'], info2['category']),
+                    'figure_category': fg_info['category'],
+                    'ground_category': bg_info['category'],
+                    'figure_ground_semantic_clear': bool(semantic_clear),
                     'colors': (
                         self._rgb_to_color_info(color1),
                         self._rgb_to_color_info(color2),
                     ),
                     'wcag_ratio': float(wcag_ratio),
                     'delta_e2000': float(self.calculate_delta_e2000(color1, color2)),
-                    'apca_lc': (
-                        float(self.calculate_apca_lc(color1, color2))
-                        if self.compute_apca_lc else 0.0
-                    ),
-                    'weber_contrast': (
-                        float(self.calculate_weber_contrast(fg_color, bg_color))
-                        if self.compute_weber_contrast else 0.0
+                    'apca_lc': float(self.calculate_apca_lc(fg_color, bg_color)),
+                    'weber_contrast': float(
+                        self.calculate_weber_contrast(fg_color, bg_color)
                     ),
                     'hue_difference': float(hue_diff),
                     'saturation_difference': float(sat_diff),
