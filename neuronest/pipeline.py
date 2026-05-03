@@ -134,6 +134,19 @@ class NeuroNestApp:
                         logger.error(f"{key} failed: {e}")
                         results[key] = None
 
+            # Surface a structured "skipped" payload when placement was lazy-skipped
+            # so /analyze_wrapper consumers always see the placement key documented
+            # in API_CHANGES.md, not a missing field.
+            if enable_placement and not run_placement and results.get("placement") is None:
+                if self.placement_analyzer is None or not self.placement_analyzer.depth_model.is_loaded:
+                    skip_reason = "placement model unavailable"
+                else:
+                    skip_reason = "no sign or clock detected"
+                results["placement"] = {
+                    "skipped": True,
+                    "reason": skip_reason,
+                }
+
             t_total = time.perf_counter() - t0
             logger.info(f"Pipeline: {t_total:.1f}s total")
 

@@ -41,12 +41,15 @@ def create_gradio_interface():
         contrast_threshold,
         enable_blackspot,
         enable_contrast,
-        enable_placement,
     ):
+        # Output tuple positions are part of the public contract: external
+        # consumers (Spring mobile proxy) read [3]=report, [4]=structured.
+        # Placement is appended at [5] as an additive position so older
+        # 5-input clients keep working unchanged.
         if image_path is None:
             return (
-                None, None, None, None,
-                "Please upload an image.", {}, {},
+                None, None, None,
+                "Please upload an image.", {}, None, {},
             )
         results = app.analyze_image(
             image_path=image_path,
@@ -54,12 +57,12 @@ def create_gradio_interface():
             contrast_threshold=contrast_threshold,
             enable_blackspot=enable_blackspot,
             enable_contrast=enable_contrast,
-            enable_placement=enable_placement,
+            enable_placement=True,
         )
         if "error" in results:
             return (
-                None, None, None, None,
-                f"Error: {results['error']}", {}, {},
+                None, None, None,
+                f"Error: {results['error']}", {}, None, {},
             )
         seg_output = results["segmentation"]["visualization"] if results["segmentation"] else None
         blackspot_output = results["blackspot"]["visualization"] if results["blackspot"] else None
@@ -73,8 +76,8 @@ def create_gradio_interface():
         report = _comprehensive_report(results)
         structured = _build_structured_json(results)
         return (
-            seg_output, blackspot_output, contrast_output, placement_output,
-            report, structured, results,
+            seg_output, blackspot_output, contrast_output,
+            report, structured, placement_output, results,
         )
 
     def _build_xai_summary(results, method_name="Full Suite"):
@@ -427,7 +430,7 @@ and low-contrast objects invisible. This leads to falls, reduced mobility, and d
 - **98% precision** on blackspot detection via fine-tuned Mask R-CNN with active learning
 - **Dynamic INT8 quantization**: ~2-3x CPU inference speedup
 - **Vectorized analysis**: 50-200x faster contrast computation using numpy C-level operations
-- **Concurrent pipeline**: Blackspot + contrast analysis execute in parallel (ThreadPoolExecutor)
+- **Concurrent pipeline**: Blackspot, contrast, and sign/clock placement analysis execute in parallel (ThreadPoolExecutor)
 - **7 XAI methods**: Self-attention, rollout, GradCAM, entropy, PCA, Integrated Gradients, Chefer relevancy
 - **CPU-optimized**: Runs on HuggingFace Spaces free tier (2 vCPU, 16 GB RAM)
 """)
@@ -497,12 +500,10 @@ The system identifies visual hazards that cause falls in Alzheimer's patients â€
                     blackspot_threshold = gr.Slider(minimum=0.1, maximum=0.9, value=0.5, step=0.05, label="Blackspot Sensitivity", visible=blackspot_ok)
                     enable_contrast = gr.Checkbox(value=True, label="Contrast Analysis")
                     contrast_threshold = gr.Slider(minimum=3.0, maximum=7.0, value=4.5, step=0.1, label="WCAG Contrast Threshold", info="4.5:1 = WCAG AA, 7:1 = AAA")
-                    enable_placement = gr.Checkbox(
-                        value=placement_ok,
-                        label="Sign & Clock Placement (ADA)",
-                        interactive=placement_ok,
-                        info="Adds ~3-5s on CPU. Requires monocular metric depth model.",
-                    )
+                    # Placement runs whenever sign/clock pixels are detected â€” there
+                    # is no checkbox, so the /analyze_wrapper API stays at five inputs
+                    # (file, blackspot_threshold, contrast_threshold, enable_blackspot,
+                    # enable_contrast) and existing mobile clients keep working.
 
         gr.Markdown("### Results")
         with gr.Tabs():
@@ -559,11 +560,11 @@ The system identifies visual hazards that cause falls in Alzheimer's patients â€
             fn=analyze_wrapper,
             inputs=[
                 image_input_display, blackspot_threshold, contrast_threshold,
-                enable_blackspot, enable_contrast, enable_placement,
+                enable_blackspot, enable_contrast,
             ],
             outputs=[
-                seg_display, blackspot_display, contrast_display, placement_display,
-                analysis_report, structured_json_display, analysis_state,
+                seg_display, blackspot_display, contrast_display,
+                analysis_report, structured_json_display, placement_display, analysis_state,
             ],
         ).then(
             fn=auto_xai_wrapper,
