@@ -1,5 +1,17 @@
-"""Defect 3 — Vertical placement analyzer for signs and clocks (geometry primitives)."""
+"""Defect 3 — Vertical placement analyzer for signs and clocks.
 
+Public surface:
+    - VerticalPlacementAnalyzer  (orchestrator; mirrors BlackspotDetector contract)
+    - PlacementResult, PlacementDetection  (typed result containers)
+
+Implementation modules:
+    - geometry:    pinhole intrinsics, back-projection, RANSAC plane fit
+    - calibration: door / ceiling-based scale self-calibration
+    - viz:         annotated visualization
+    - analyzer:    end-to-end orchestrator
+"""
+
+from .analyzer import VerticalPlacementAnalyzer
 from .geometry import (
     PinholeCamera,
     back_project,
@@ -8,6 +20,7 @@ from .geometry import (
 )
 
 __all__ = [
+    "VerticalPlacementAnalyzer",
     "PinholeCamera",
     "back_project",
     "fit_floor_plane",
